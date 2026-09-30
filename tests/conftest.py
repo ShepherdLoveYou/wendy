@@ -1,30 +1,29 @@
-"""测试用的假 Canvas / 假选课系统 / 假 Gemini，以及把生成的页面解析成可断言的结构。
-
-全部用虚构课程（TEST 101、DEMO 002A），不含任何真实课表。
+"""Test doubles — a fake Canvas, a fake Banner class search, no real AI — and a parser that turns a generated
+page into something tests can assert on. Only fictional courses (TEST 101, DEMO 002A); no real timetable.
+测试替身：假 Canvas、假选课系统、不调用真实 AI；以及把生成的页面解析成可断言的结构。全部是虚构课程。
 """
 from __future__ import annotations
 
 import json
 import re
-import sys
 import urllib.error
 import urllib.parse
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "assistant"))
-import build_today as bt  # noqa: E402
+from purrfessor import agent as ag
+from purrfessor import banner as bn
+from purrfessor import build as bt
 
 TZ = ZoneInfo("America/Los_Angeles")
 UTC = timezone.utc
 
 
 def pt(s: str) -> datetime:
-    """'2026-10-02 23:59' → 太平洋时间"""
+    """'2026-10-02 23:59' → Pacific time"""
     return datetime.strptime(s, "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
 
 
@@ -32,7 +31,7 @@ def z(dt: datetime) -> str:
     return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-# ---------- 假 Canvas ----------
+# ---------- fake Canvas ----------
 
 COURSES = [
     {"id": 1001, "course_code": "TEST_101_001_26F", "enrollments": [{"type": "student", "computed_current_score": 91.5}],
@@ -41,7 +40,7 @@ COURSES = [
     {"id": 1002, "course_code": "DEMO_002A_010_26F", "enrollments": [{"type": "student", "computed_current_score": None}],
      "sections": [
         {"name": "DEMO_002A_010_26F - DEMO"}, {"name": "DEMO_002A_021_26F - DEMO"}]},
-    {"id": 1003, "course_code": "Orientation 2026", "sections": []},   # 不是正式课，应被忽略
+    {"id": 1003, "course_code": "Orientation 2026", "sections": []},   # not a real course: ignored
 ]
 CODE = {c["id"]: c["course_code"] for c in COURSES}
 
@@ -67,8 +66,8 @@ def announcement(aid, cid, title, message, posted: datetime, unread=True):
 class FakeCanvas:
     planner: list = field(default_factory=list)
     announcements: list = field(default_factory=list)
-    fail: int | None = None          # 设成 401 之类，模拟 token 失效
-    submissions: dict = field(default_factory=dict)   # 课程 id → 提交记录（成绩）
+    fail: int | None = None          # e.g. 401: token expired
+    submissions: dict = field(default_factory=dict)   # course id → submissions (grades)
     grades_fail: bool = False
     calls: list = field(default_factory=list)
 
@@ -97,7 +96,7 @@ class FakeCanvas:
         raise AssertionError(f"unexpected Canvas path {path}")
 
 
-# ---------- 假选课系统（Banner 公开查询的返回格式） ----------
+# ---------- fake Banner (public class search response format) ----------
 
 def meeting(days: str, begin: str | None, end: str | None, building="TSTB", desc="Test Building", room="101",
             start="09/24/2026", stop="12/04/2026", mtype="Class"):
@@ -117,7 +116,7 @@ BANNER = {
         {"courseNumber": "101", "sequenceNumber": "021", "scheduleTypeDescription": "Discussion",
          "faculty": [{"displayName": "Assistant, Tee", "primaryIndicator": True}],
          "meetingsFaculty": [meeting("R", "1400", "1450", room="202")]},
-        {"courseNumber": "101", "sequenceNumber": "022", "scheduleTypeDescription": "Discussion",   # 没选
+        {"courseNumber": "101", "sequenceNumber": "022", "scheduleTypeDescription": "Discussion",   # not enrolled
          "faculty": [], "meetingsFaculty": [meeting("R", "1500", "1550")]},
     ],
     ("DEMO", "002A"): [
@@ -152,11 +151,12 @@ class FakeOpener:
         return FakeResp(b"{}")
 
 
-# ---------- 配置 ----------
+# ---------- personal config ----------
 
-SCHEDULE = """
-[term]
-holidays = ["2026-11-11", "2026-11-26", "2026-11-27"]
+CONFIG = """
+preset = "ucr"
+language = "{lang}"
+name = "Tester"
 
 [courses]
 "1001" = "TEST 101"
@@ -164,13 +164,13 @@ holidays = ["2026-11-11", "2026-11-26", "2026-11-27"]
 
 [[notes]]
 course = "TEST 101"
-kind = "讨论课"
+kind = "discussion"
 from = "2026-10-01"
-note = "第一周才开始"
+note = "starts in week 1"
 
 [[recurring]]
 course = "DEMO 002A"
-title = "网上作业"
+title = "Online homework"
 platform = "HW"
 weekday = "Fri"
 due = "23:59"
@@ -180,22 +180,25 @@ url = "https://hw.test"
 """
 
 
-# ---------- 解析生成的页面 ----------
+# ---------- parse the generated page ----------
 
 @dataclass
 class Page:
     html: str
     data: dict
     states: dict          # task id → overdue / soon / later / done
-    stats: dict           # 卡片标签 → 数字
+    stats: dict           # stat card label → number
     warnings: list
-    today_classes: list   # ["TEST 101 大课", ...]
+    today_classes: list   # ["TEST 101 Lecture", ...]
     tomorrow: str
-    announcements: list  # 公告标题
+    announcements: list   # announcement titles
     week: str
 
     def state(self, tid):
         return self.states.get(tid)
+
+    def section(self, sid: str) -> str:
+        return self.html.split(f'id="{sid}"')[1].split("</section>")[0] if f'id="{sid}"' in self.html else ""
 
 
 def text(x: str) -> str:
@@ -207,7 +210,7 @@ def parse(html: str) -> Page:
                       .group(1).replace("<\\/", "</"))
     states = {}
     for m in re.finditer(r'data-id="([^"]+)" data-state="([^"]*)"', html):
-        assert m.group(1) not in states, f"作业 {m.group(1)} 在页面上出现了不止一次"
+        assert m.group(1) not in states, f"task {m.group(1)} is on the page more than once"
         states[m.group(1)] = m.group(2)
     stats = {m.group(2): int(m.group(1)) for m in re.finditer(
         r'<div class="h1 mb-0 lh-1">(\d+)</div><div class="text-secondary small">([^<]+)</div>', html)}
@@ -215,7 +218,7 @@ def parse(html: str) -> Page:
     today = html[html.index('id="today"'):html.index('id="todo"')]
     today_classes = [text(m.group(1)) for m in re.finditer(
         r'<div class="col min-w-0"><div class="fw-medium">(.*?)</div>', today)]
-    tomorrow = text(re.search(r'明天：(.*?)</div>', today).group(1))
+    tomorrow = text(re.search(r'<i class="ti ti-arrow-right"></i> (.*?)</div>', today).group(1))
     news = html[html.index('id="news"'):] if 'id="news"' in html else ""
     anns = [text(m.group(1)) for m in re.finditer(r'<div class="fw-medium"><a[^>]*>(.*?)</a>', news)]
     week = re.search(r"Week (\d+) / (\d+)", html).group(0)
@@ -224,26 +227,29 @@ def parse(html: str) -> Page:
 
 @pytest.fixture
 def build(monkeypatch, tmp_path):
-    """build(now, canvas, ai=None, banner=BANNER, schedule=SCHEDULE, banner_fail=False) → Page"""
-    def run(now: datetime, canvas: FakeCanvas | None = None, ai=None, banner=None, schedule=SCHEDULE,
-            banner_fail=False, token=True, model=None, prev: Page | None = None, archive=None) -> Page:
+    """build(now, canvas=None, ai=None, banner=None, config=CONFIG, lang="zh", ...) → Page"""
+    def run(now: datetime, canvas: FakeCanvas | None = None, ai=None, banner=None, config: str | None = CONFIG,
+            lang: str = "zh", banner_fail=False, token=True, model=None, prev: Page | None = None, archive=None,
+            home_url: str = "") -> Page:
         canvas = canvas or FakeCanvas()
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)          # 测试里绝不调用真实模型
-        monkeypatch.setattr(bt.brief_agent, "default_model", lambda: model)
-        monkeypatch.setattr(bt, "canvas_get", canvas.get)
-        monkeypatch.setattr(bt, "banner_opener", lambda: FakeOpener(BANNER if banner is None else banner, banner_fail))
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)          # tests never call a real model
+        monkeypatch.setattr(ag, "default_model", lambda: model)
+        monkeypatch.setattr(bt, "make_canvas", lambda S: canvas)
+        monkeypatch.setattr(bn, "opener", lambda: FakeOpener(BANNER if banner is None else banner, banner_fail))
         monkeypatch.setattr(bt, "enrich", (lambda *a: ai(*a)) if callable(ai) else (lambda *a: ai))
         if token:
             monkeypatch.setenv("CANVAS_TOKEN", "test")
         else:
             monkeypatch.delenv("CANVAS_TOKEN", raising=False)
-        cfg = tmp_path / "schedule.toml"
-        if schedule is None:
+        cfg = tmp_path / "purrfessor.toml"
+        if config is None:
             cfg = tmp_path / "missing.toml"
         else:
-            cfg.write_text(schedule, encoding="utf-8")
+            cfg.write_text(config.replace("{lang}", lang), encoding="utf-8")
         out = tmp_path / "out.html"
         argv = ["--out", str(out), "--config", str(cfg), "--now", now.isoformat()]
+        if home_url:
+            argv += ["--home-url", home_url]
         if prev is not None:
             (tmp_path / "prev.html").write_text(prev.html, encoding="utf-8")
             argv += ["--prev", str(tmp_path / "prev.html")]

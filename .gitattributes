@@ -1,0 +1,2 @@
+# Keep this repo's own README when pulling framework updates (needs: git config merge.ours.driver true)
+README.md merge=ours

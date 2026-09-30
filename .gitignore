@@ -1,6 +1,14 @@
+# personal config and secrets — never commit / 个人配置与密钥，绝不提交
+purrfessor.toml
 .env
+# build output / 生成物
 _build/
 _site/
-_plain/
+_prev/
+_check/
+# Python
 __pycache__/
-assistant/schedule.toml
+*.egg-info/
+.venv/
+.pytest_cache/
+dist/

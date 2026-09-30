@@ -1,4 +1,5 @@
-"""成绩与完成情况：总成绩可能不公开；得分率由已批改作业算出；缺交、晚交计数；读不到时不影响页面。"""
+"""Grades & completion: the total may be hidden; the rate comes from graded work; missing / late counts;
+failing to read grades never breaks the page. 成绩与完成情况。"""
 from __future__ import annotations
 
 from conftest import FakeCanvas, pt
@@ -18,11 +19,11 @@ def test_grades_card_shows_rate_missing_late_and_hidden_totals(build):
     })
     page = build(NOW, canvas)
     card = page.html.split('id="grades"')[1].split("</section>")[0]
-    assert "91.5%" in card                                   # TEST 101 公开了总成绩
-    assert "90%（27/30，2 项）" in card                        # 不计 omit 的作业；未批改的不算
+    assert "91.5%" in card                                   # TEST 101 shows its total
+    assert "90%（27/30，2 项）" in card                        # omitted and ungraded work don't count
     assert "缺交 1" in card and "晚交 1" in card
     assert "老师未公开" in card and "还没有批改的作业" in card   # DEMO 002A
-    assert "Orientation" not in card                         # 非正式课不显示
+    assert "Orientation" not in card                         # not a real course
 
 
 def test_grades_failure_is_not_fatal(build):
@@ -31,5 +32,6 @@ def test_grades_failure_is_not_fatal(build):
 
 
 def test_nav_has_home_link(build):
-    page = build(NOW)
-    assert 'href="../"' in page.html and "大学规划" in page.html
+    page = build(NOW, home_url="../")
+    assert 'href="../"' in page.html and "首页" in page.html
+    assert 'class="nav-link" href="../"' not in build(NOW).html

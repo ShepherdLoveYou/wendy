@@ -1,111 +1,57 @@
-# wendy
+<p align="center">
+  <img src="purrfessor/assets/logo.svg" width="96" alt="">
+</p>
 
-Wendy 的大学规划与进度表 · 口令保护的加密静态站点（UC Riverside 转学路线）。
+<h1 align="center">Wendy 的今日</h1>
 
-- `index.html` 为 **Staticrypt 加密文件**（PBKDF2-SHA256 + AES-256），没有口令无法读取任何内容——包括查看源代码。
-- 明文 HTML **不在本仓库中**，仓库公开也不泄露内容。
-- 部署：GitHub Actions（`.github/workflows/deploy.yml`），push 到 `main` 自动发布到 GitHub Pages。
+<p align="center">
+  Wendy 的大学规划和 UCR 每日看板 · 口令保护的加密静态网站<br>
+  基于 <a href="https://github.com/ShepherdLoveYou/purrfessor">Purrfessor · 喵教授</a>
+</p>
 
-## 更新流程（本地）
+<p align="center"><a href="#english">English</a> · <a href="#中文">中文</a></p>
 
-1. 修改本地明文 HTML
-2. 重新加密：`npx staticrypt@latest "<明文文件>.html" -p "<口令>" -d site_tmp`
-3. 将输出重命名为 `index.html` 覆盖本仓库同名文件
-4. `git add . && git commit -m "update" && git push`
+## 中文
 
-## 今日助理（`/today/`）
-
-地址：<https://shepherdloveyou.github.io/wendy/today/>（同样需要口令，可以勾选"30 天内记住我"）
-
-每天自动更新 4 次（太平洋时间 00:05 / 06:00 / 12:00 / 18:00），内容包括：
-
-- **下一节课 / 最近的截止**：打开页面时实时计算的两张卡片
-- **今天的课**：时间线，带"还有多久上课 / 上课中"；当天公告说取消的课会标出来
-- **两周内要交的作业**：按截止日期分组，每项都有实时倒计时，快到期的变橙、变红；逾期的置顶
-- **Canvas 之外的固定作业**：Top Hat、iMath 等 Canvas 读不到的，按规律生成，做完可以在页面上自己勾选
-- **课程表**：自动从 UCR 选课系统读取上课时间和教室，每天顶部一行是当天的截止；可以翻周、切换日视图和列表
-- **公告**：最近的课程公告和摘要；正文里写了截止日期的句子会被自动识别，并加进待办
-- **今日简报**（自改进 AI 智能体）：今天先做哪 3 件事、为什么、第一步做什么、有什么风险；以及它从过去的执行情况里学到的经验
-- **成绩与完成情况**：各科总成绩（老师公开时）、已批改作业的得分率（未加权）、缺交和晚交次数
-- **和上次比**：新作业、刚交掉的、改了截止时间的、被撤下的、新公告、课表变化（代码算出，不依赖 AI）
-- **历史快照**：保留最近 30 天，每天一份，可以翻看
-
-所有时间都按加州时间显示，在别的时区打开也不会看错。页面跟随系统自动切换深色模式。
-
-### 怎么运作
-
-```
-GitHub Actions（定时）
-  ├─ assistant/build_today.py   Canvas API：作业、测验、公告、选了哪些班（课号里带班号）
-  │                              UCR 选课系统（公开查询）：每个班的上课时间、教室、老师
-  │                              → 按 assistant/template.html 生成明文页面
-  ├─ staticrypt                  用口令加密（固定 salt 在 .staticrypt.json，"记住我"不会失效）
-  └─ 部署到 GitHub Pages         明文和课表只存在于构建机器上，不进公开仓库
-```
-
-### 今日简报智能体（`assistant/agent.py`）
-
-按业界通行做法设计（参考 Anthropic *Building Effective Agents*）：
-
-- **确定的事实交给代码**：逾期、倒计时、课表、和上次比的变化都由代码算出并有测试；智能体只做需要判断的部分
-- **只读工具白名单**：`get_feedback`、`get_grades`、`list_tasks`、`get_schedule`、`get_changes`、`get_task_details`、`list_announcements`，不能提交或修改任何东西
-- **结构化输出 + 双重校验**：Pydantic 结构由框架校验，引用不存在的作业会让模型重试一次；代码再过滤一遍（未知作业、重复项、超长文字）
-- **自改进闭环**：每份简报的建议存进加密快照；下次运行由**代码**核对执行情况（已交 / 错过 / 还没到期 / Canvas 之外看不到），
-  智能体据此更新最多 5 条"经验"（每条 ≤80 字），经验随快照一代代传下去；智能体失败或没给新经验时，旧经验原样保留
-- **护栏**：最多 7 次请求、14 次工具调用，单个工具 30 秒超时；主模型失败自动换备用模型（`FallbackModel`）；工具出错返回给模型而不是中断
-- **公告是可信的官方信息**：公告全文和作业说明交给智能体，其中的截止时间、要求和临时变化优先采信；和 Canvas 数据冲突时以更新的公告为准，并在风险里指出。智能体仍然只有只读工具，页面上的作业状态由代码决定
-- **失败安全**：任何失败只是不显示简报，页面其他部分照常
-- **可测试**：`tests/test_agent.py` 用 PydanticAI 的 `FunctionModel` 模拟模型，不联网
-- **不泄露内容**：日志只记请求数、工具调用数、token 数和耗时
-
-框架 [PydanticAI](https://ai.pydantic.dev)（MIT），模型 Gemini 免费版（`gemini-3.6-flash`，备用 `gemini-3.5-flash-lite`）。
-
-### 快照
-
-每次运行从线上取回上一份加密页面，在构建机器上用口令解密，读出里面嵌的状态来算变化；
-这次的加密页面存成当天的快照（`today/archive/YYYY-MM-DD.html`，保留 30 天）。
-不用缓存、不产生提交、不在任何地方留明文。
-
-页面用的都是开源组件，从 jsDelivr CDN 加载，不需要构建：
-[Tabler](https://tabler.io)（UI 套件，MIT）、[Tabler Icons](https://tabler.io/icons)（MIT）、
-[FullCalendar](https://fullcalendar.io)（课程表，MIT，Forma 主题）。
-
-需要的 GitHub Secrets（Settings → Secrets and variables → Actions）：
-
-| Secret | 内容 |
+| 页面 | 地址 |
 |---|---|
-| `CANVAS_TOKEN` | Canvas → Account → Settings → New Access Token（当前的在 2026-12-25 过期） |
-| `SITE_PASSWORD` | 网站口令 |
-| `GEMINI_API_KEY` | 可选：Google AI Studio 的免费 key（翻译、理解公告、今日简报） |
-| `SCHEDULE_TOML` | 补充配置：学期信息、课的备注和链接、Canvas 之外的固定作业（格式见 `assistant/schedule.example.toml`；上课时间会自动读取，不用填） |
+| **首页**：大学规划与进度表 | <https://shepherdloveyou.github.io/wendy/> |
+| **今日**：课、作业、公告、成绩、AI 简报 | <https://shepherdloveyou.github.io/wendy/today/> |
 
-### 本地开发
+两个页面都需要口令，可以勾选"30 天内记住我"。今日页面每天自动更新 4 次（太平洋时间 00:05 / 06:00 / 12:00 / 18:00），
+页面上有什么见[喵教授的说明](https://github.com/ShepherdLoveYou/purrfessor#中文)。
 
-```bash
-mise run today            # 生成并打开今日页面（明文，只在本地）
-mise run test             # 跑完整测试（状态机、不变量、智能体护栏、快照、出错降级）
-mise run encrypt          # 预览加密后的口令页
-mise run schedule-upload  # 改完 assistant/schedule.toml 后上传到 Secret 并重新部署
-```
+### 常用操作
 
-本地的 `.env`（已被 git 忽略）里放 `CANVAS_TOKEN`、`SITE_PASSWORD`，可选 `GEMINI_API_KEY`。依赖见 `assistant/requirements.txt`，mise 任务会用 uv 自动安装。
+- **改今日页面的设置**（课程简称、课的备注、每周固定作业、假期）：编辑本地的 `purrfessor.toml`（私密，不进仓库），
+  然后运行 `purrfessor config-upload`，会上传并重新部署。
+- **更新首页**：修改本地的明文 HTML，在仓库根目录重新加密（会沿用 `.staticrypt.json` 里的盐），
+  再用输出覆盖 `site/index.html`，提交并推送：
+  ```bash
+  npx staticrypt@3 "<明文文件>.html" -d site_tmp --remember 30   # 会提示输入口令
+  ```
+  明文 HTML 不要放进仓库。
+- **更新喵教授框架**：`git pull upstream main`（upstream 是 ShepherdLoveYou/purrfessor）。
+  这份 README 不会被覆盖：`.gitattributes` 里设置了 `merge=ours`，新的电脑上先运行一次
+  `git config merge.ours.driver true`。
+- **本地测试**：`mise run setup && mise run test`。
 
-### 维护
+GitHub 上的设置：Secrets `CANVAS_TOKEN`、`SITE_PASSWORD`、`GEMINI_API_KEY`、`PURRFESSOR_CONFIG`，
+变量 `PURRFESSOR_ENABLED = true`。
 
-- 每次部署前先跑测试（`deploy.yml`），任何 PR 也会跑测试（`test.yml`，不接触 Secret）
-- Dependabot（`.github/dependabot.yml`）每周六检查 Actions 和 Python 依赖的新版本，同类升级合成一个 PR；
-  测试通过后在 GitHub 上点合并即可
+## English
 
-### 从首页跳到今日页面
+| Page | URL |
+|---|---|
+| **Home**: college plan and progress | <https://shepherdloveyou.github.io/wendy/> |
+| **Today**: classes, to-dos, announcements, grades, AI brief | <https://shepherdloveyou.github.io/wendy/today/> |
 
-今日页面的导航栏里有"大学规划"链接回首页。首页是另一份加密页面，要从首页跳过来，
-在首页的明文 HTML 里加一个链接，然后按上面的"更新流程"重新加密即可：
+Both pages need the password. The daily page is rebuilt 4 times a day by
+[Purrfessor](https://github.com/ShepherdLoveYou/purrfessor#english).
 
-```html
-<a href="today/">📅 今日待办</a>
-```
-
-### 注意
-
-- 公开仓库的定时任务在仓库 **60 天没有任何提交** 后会被 GitHub 自动停用，需要到 Actions 页面重新启用。
-- Canvas token 过期后页面顶部会显示提示，重新生成后更新 `CANVAS_TOKEN` 即可。
+- **Change the daily page's settings**: edit the local, git-ignored `purrfessor.toml`, then run
+  `purrfessor config-upload`.
+- **Update the home page**: re-encrypt the plaintext HTML from the repo root (the salt in `.staticrypt.json` is
+  reused), replace `site/index.html` with the output, then commit and push. Never commit the plaintext.
+- **Update the framework**: `git pull upstream main`. This README is kept by `merge=ours` in `.gitattributes`
+  (run `git config merge.ours.driver true` once per clone).

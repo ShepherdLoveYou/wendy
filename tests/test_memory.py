@@ -1,20 +1,22 @@
-"""自改进闭环：代码核对建议的执行情况 → 智能体更新经验 → 经验随快照传到下一次；失败时不丢。"""
+"""The self-improvement loop: code checks whether advice was followed → the agent updates its lessons →
+the lessons travel to the next run inside the snapshot; nothing is lost on failure. 自改进闭环。"""
 from __future__ import annotations
 
-import agent as ag
-import snapshot as sn
 from conftest import FakeCanvas, item, pt
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
+from purrfessor import agent as ag
+from purrfessor import snapshot as sn
+
 
 def brief(priorities, lessons=()):
-    return {"headline": "今天的重点", "priorities": [{"task_id": t, "why": "原因", "first_step": "第一步"} for t in priorities],
-            "risks": [], "changes": "没有新变化", "lessons": list(lessons)}
+    return {"headline": "Today's focus", "priorities": [{"task_id": t, "why": "why", "first_step": "step"} for t in priorities],
+            "risks": [], "changes": "nothing new", "lessons": list(lessons)}
 
 
 def agent_that(output, seen=None):
-    """先调用 get_feedback（把拿到的结果记在 seen 里），再给出 output。"""
+    """Call get_feedback first (recording what it returned in `seen`), then answer with `output`."""
     state = {"n": 0}
 
     def fn(messages, info):
@@ -43,30 +45,30 @@ def canvas(a_done=False, b_done=False):
 
 
 def test_self_improvement_loop_across_days(build):
-    # 第 1 天：建议先做 A、B；还没有历史可核对
+    # day 1: suggests A and B; nothing to check yet
     day1 = build(pt("2026-10-05 12:30"), canvas(), model=agent_that(brief([A, B])))
     assert day1.data["state"]["briefs"]["2026-10-05"]["priorities"] == [A, B]
     assert day1.data["state"]["lessons"] == [] and day1.data["state"]["feedback"] == []
 
-    # 第 2 天：A 交了，B 错过了 → 代码核对出来，交给智能体；智能体写出新经验
+    # day 2: A submitted, B missed → code evaluates it and hands it to the agent, which writes a lesson
     seen = {}
-    lesson = "早上截止的小测容易忘，前一天晚上就提醒她"
+    lesson = "Morning quizzes get missed; flag them the evening before"
     day2 = build(pt("2026-10-07 08:00"), canvas(a_done=True), prev=day1,
                  model=agent_that(brief([C], lessons=[lesson]), seen))
     fb = day2.data["state"]["feedback"][-1]
     assert fb["brief_date"] == "2026-10-05" and (fb["done"], fb["missed"]) == (1, 1)
-    assert "'missed': 1" in seen["feedback"]                     # 核对结果确实交给了智能体
+    assert "'missed': 1" in seen["feedback"]                     # the evaluation reached the agent
     assert day2.data["state"]["lessons"] == [lesson]
     assert "它学到的经验" in day2.html and lesson in day2.html
     assert "已交 1 · 错过 1" in day2.html and "自改进智能体生成" in day2.html
 
-    # 第 3 天：智能体挂了 → 不显示简报，但经验和历史原样保留
+    # day 3: the agent fails → no brief, but lessons and history are kept
     day3 = build(pt("2026-10-08 08:00"), canvas(a_done=True), prev=day2, model=failing_agent())
     assert 'id="brief"' not in day3.html
     assert day3.data["state"]["lessons"] == [lesson]
     assert "2026-10-07" in day3.data["state"]["briefs"]
 
-    # 第 4 天：智能体没给新经验 → 保留旧的；核对的是最近一份简报（10/7 的，建议 C，还没到期）
+    # day 4: no new lessons → keep the old ones; the latest brief (10/7, suggested C, not due yet) is checked
     day4 = build(pt("2026-10-09 08:00"), canvas(a_done=True), prev=day3, model=agent_that(brief([C])))
     assert day4.data["state"]["lessons"] == [lesson]
     last = day4.data["state"]["feedback"][-1]
@@ -74,9 +76,9 @@ def test_self_improvement_loop_across_days(build):
 
 
 def test_no_key_keeps_memory_too(build):
-    day1 = build(pt("2026-10-05 12:30"), canvas(), model=agent_that(brief([A], lessons=["经验一"])))
+    day1 = build(pt("2026-10-05 12:30"), canvas(), model=agent_that(brief([A], lessons=["lesson one"])))
     day2 = build(pt("2026-10-06 12:30"), canvas(), prev=day1, model=None)
-    assert day2.data["state"]["lessons"] == ["经验一"]
+    assert day2.data["state"]["lessons"] == ["lesson one"]
 
 
 def test_lessons_guardrails():

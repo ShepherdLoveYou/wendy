@@ -1,11 +1,14 @@
-"""快照：每次生成页面时把状态存进页面数据；下次运行和上一份比较，得出"和上次比有什么变化"。
+"""Snapshots and memory. 快照与记忆。
 
-变化全部由代码算出（确定、可测试），AI 只负责把它们讲成人话、给建议。
-上一份快照从线上取回（加密的），在 CI 里用网站口令解密，不在任何地方留明文、也不需要提交或缓存。
+Each build embeds its state in the (encrypted) page. The next build fetches the live page, decrypts it on the
+CI runner and diffs against it ("since last update"), carries the agent's memory forward, and archives one
+snapshot per day. No cache, no commits, no plaintext left anywhere.
+每次生成都把状态嵌进（加密的）页面；下次运行取回线上页面、在 CI 机器上解密，算出"和上次比的变化"，
+把智能体的记忆传下去，每天归档一份快照。不用缓存、不产生提交、不留明文。
 
-命令行（给 GitHub Actions 用，只用标准库）：
-  python assistant/snapshot.py fetch --base URL --prev-dir _prev --archive-dir _site/today/archive
-  python assistant/snapshot.py add   --site-dir _site/today --date 2026-09-29 --keep 30
+CLI (used by GitHub Actions):
+  python -m purrfessor.snapshot fetch --base URL --prev-dir _prev --archive-dir _site/archive
+  python -m purrfessor.snapshot add   --site-dir _site --date 2026-09-29 --keep 30
 """
 from __future__ import annotations
 
@@ -18,17 +21,17 @@ import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
 
-TRACKED = {"Canvas", "公告"}   # 固定作业（Top Hat / iMath）每周自动生成，不算"新出现"
+TRACKED = {"Canvas", "announcement"}   # weekly off-Canvas tasks are generated, never "new"
 
 
-# ---------- 状态和对比 ----------
+# ---------- state and diff ----------
 
 def make_state(now, tasks, announcements, classes) -> dict:
     return {
         "generated": now.isoformat(),
-        "tasks": {t.id: {"title": t.zh or t.title, "course": t.course, "due": t.due.isoformat(),
+        "tasks": {t.id: {"title": t.display_title, "course": t.course, "due": t.due.isoformat(),
                          "done": t.done, "source": t.source} for t in tasks if t.source in TRACKED},
-        "announcements": {str(a["id"]): {"title": a.get("zh_title") or a["title"], "course": a["course"]}
+        "announcements": {str(a["id"]): {"title": a.get("ai_title") or a["title"], "course": a["course"]}
                           for a in announcements},
         "classes": sorted({f'{c["course"]}|{c.get("kind", "")}|{",".join(c.get("days", []))}|'
                            f'{c.get("start", "")}-{c.get("end", "")}|{c.get("where", "")}' for c in classes}),
@@ -36,11 +39,12 @@ def make_state(now, tasks, announcements, classes) -> dict:
 
 
 def diff(prev: dict | None, cur: dict) -> dict:
-    """和上一份快照比：新作业、刚交掉的、改了截止时间的、被撤下的、新公告、课表变化。"""
+    """Compare with the previous snapshot: new tasks, just submitted, due date changed, withdrawn,
+    new announcements, timetable changes."""
     if not prev:
         return {}
-    # 只比较 Canvas 上的正式作业。公告里读出的事项由 AI 提取，每次可能略有不同，比较它会产生"被撤下"之类的误报；
-    # 公告本身的新增已经在 new_announcements 里报告了
+    # Only real Canvas assignments are compared. Items read out of announcements are AI-extracted and may vary
+    # slightly between runs, which would show up as false "withdrawn"; new announcements are reported on their own.
     p = {k: v for k, v in prev.get("tasks", {}).items() if v.get("source") == "Canvas"}
     c = {k: v for k, v in cur["tasks"].items() if v.get("source") == "Canvas"}
     now = cur["generated"]
@@ -50,7 +54,7 @@ def diff(prev: dict | None, cur: dict) -> dict:
         "completed": [dict(id=k, **v) for k, v in c.items() if k in p and v["done"] and not p[k]["done"]],
         "due_changed": [dict(id=k, old_due=p[k]["due"], **v) for k, v in c.items()
                         if k in p and v["due"] != p[k]["due"]],
-        # 只报"还没到截止就不见了"的（老师撤下、改了），正常过期消失的不报
+        # only items that vanished before their due time (withdrawn by the instructor), not ones that simply expired
         "removed": [dict(id=k, **v) for k, v in p.items()
                     if k not in c and not v["done"] and v["due"] > now],
         "new_announcements": [dict(id=k, **v) for k, v in cur["announcements"].items()
@@ -61,14 +65,14 @@ def diff(prev: dict | None, cur: dict) -> dict:
     return {k: v for k, v in out.items() if v}
 
 
-# ---------- 自改进：核对上次的建议有没有被执行，把经验一代代传下去 ----------
+# ---------- self-improvement: check whether the last advice was followed, carry lessons forward ----------
 
-MAX_LESSONS, LESSON_LEN, KEEP_BRIEF_DAYS, KEEP_FEEDBACK = 5, 80, 7, 14
+MAX_LESSONS, LESSON_LEN, KEEP_BRIEF_DAYS, KEEP_FEEDBACK = 5, 160, 7, 14
 
 
 def evaluate(prev: dict | None, cur: dict, today: str) -> dict | None:
-    """核对"今天之前最近一份简报"建议先做的事，现在怎么样了。结果由代码判断，不靠 AI。
-    done=已交  missed=过了截止还没交  open=还没到截止  unverifiable=Canvas 之外的任务，看不到完成情况"""
+    """What happened to the priorities of the latest brief before today? Judged by code, not by the AI.
+    done = submitted · missed = past due, not submitted · open = not due yet · unverifiable = off-Canvas task"""
     briefs = (prev or {}).get("briefs", {})
     past = sorted(d for d in briefs if d < today)
     if not past:
@@ -94,7 +98,7 @@ def evaluate(prev: dict | None, cur: dict, today: str) -> dict | None:
 
 
 def clean_lessons(lessons) -> list[str]:
-    """经验条目的护栏：只要字符串、去空、去重、每条不超过 80 字、最多 5 条。"""
+    """Guardrails for lessons: strings only, trimmed, de-duplicated, LESSON_LEN chars each, MAX_LESSONS at most."""
     out = []
     for x in lessons or []:
         x = " ".join(str(x).split())[:LESSON_LEN] if isinstance(x, str) else ""
@@ -104,8 +108,8 @@ def clean_lessons(lessons) -> list[str]:
 
 
 def carry_memory(prev: dict | None, cur: dict, today: str, brief=None) -> dict:
-    """算出这一次要存进快照的记忆：最近 7 天的简报、最近 14 次核对、当前的经验。
-    智能体这次失败（brief=None）时，经验和历史原样保留，不会丢。"""
+    """The memory stored in this snapshot: briefs of the last KEEP_BRIEF_DAYS days, the last KEEP_FEEDBACK
+    evaluations and the current lessons. If the agent failed this time (brief=None), nothing is lost."""
     prev = prev or {}
     briefs = {d: b for d, b in prev.get("briefs", {}).items()
               if d >= (date.fromisoformat(today) - timedelta(days=KEEP_BRIEF_DAYS)).isoformat()}
@@ -120,7 +124,7 @@ def carry_memory(prev: dict | None, cur: dict, today: str, brief=None) -> dict:
 
 
 def load_prev_state(path: str | None) -> dict | None:
-    """从上一份（已解密的）页面里取出嵌在数据里的状态；拿不到就返回 None（第一次运行、解密失败等）。"""
+    """The state embedded in the previous (decrypted) page, or None (first run, decryption failed, …)."""
     if not path or not Path(path).exists():
         return None
     m = re.search(r'<script type="application/json" id="data">(.*?)</script>',
@@ -131,7 +135,7 @@ def load_prev_state(path: str | None) -> dict | None:
         return None
 
 
-# ---------- 线上归档：取回、追加、清理 ----------
+# ---------- online archive: fetch, add, prune ----------
 
 def _get(url: str) -> bytes | None:
     try:
@@ -142,26 +146,26 @@ def _get(url: str) -> bytes | None:
 
 
 def fetch(base: str, prev_dir: Path, archive_dir: Path) -> None:
-    """取回上一份（加密的）今日页面和所有归档快照，下次部署时原样带上。"""
+    """Download the previous (encrypted) page and all archived snapshots so the next deploy keeps them."""
     base = base.rstrip("/")
     prev_dir.mkdir(parents=True, exist_ok=True)
     archive_dir.mkdir(parents=True, exist_ok=True)
-    page = _get(f"{base}/today/index.html")
+    page = _get(f"{base}/index.html")
     if page:
         (prev_dir / "index.html").write_bytes(page)
-    manifest = _get(f"{base}/today/archive/index.json")
+    manifest = _get(f"{base}/archive/index.json")
     dates = json.loads(manifest).get("dates", []) if manifest else []
     kept = []
     for d in dates:
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d) and (body := _get(f"{base}/today/archive/{d}.html")):
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d) and (body := _get(f"{base}/archive/{d}.html")):
             (archive_dir / f"{d}.html").write_bytes(body)
             kept.append(d)
     (prev_dir / "archive.json").write_text(json.dumps({"dates": kept}), encoding="utf-8")
-    print(f"取回上一份页面：{'有' if page else '没有'}，归档快照 {len(kept)} 份")
+    print(f"previous page: {'found' if page else 'none'} · archived snapshots: {len(kept)}")
 
 
 def add(site_dir: Path, day: str, keep: int) -> None:
-    """把这次（加密后的）页面存成当天的快照，只保留最近 keep 天。"""
+    """Save this (encrypted) page as today's snapshot and keep only the last `keep` days."""
     archive = site_dir / "archive"
     archive.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(site_dir / "index.html", archive / f"{day}.html")
@@ -172,22 +176,32 @@ def add(site_dir: Path, day: str, keep: int) -> None:
             (archive / f"{d}.html").unlink()
     dates = [d for d in dates if d > cutoff]
     (archive / "index.json").write_text(json.dumps({"dates": dates}), encoding="utf-8")
-    print(f"归档快照 {len(dates)} 份（最近 {keep} 天）")
+    print(f"archived snapshots: {len(dates)} (last {keep} days)")
 
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
+def cli(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(prog="purrfessor snapshot")
     sub = ap.add_subparsers(dest="cmd", required=True)
     f = sub.add_parser("fetch")
     f.add_argument("--base", required=True)
     f.add_argument("--prev-dir", default="_prev")
-    f.add_argument("--archive-dir", default="_site/today/archive")
+    f.add_argument("--archive-dir", default="_site/archive")
     a = sub.add_parser("add")
-    a.add_argument("--site-dir", default="_site/today")
-    a.add_argument("--date", required=True)
+    a.add_argument("--site-dir", default="_site")
+    a.add_argument("--date", help="YYYY-MM-DD (default: today in the school's time zone, from --config)")
+    a.add_argument("--config", default="purrfessor.toml")
     a.add_argument("--keep", type=int, default=30)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.cmd == "fetch":
         fetch(args.base, Path(args.prev_dir), Path(args.archive_dir))
     else:
+        if not args.date:
+            from datetime import datetime
+
+            from .config import load
+            args.date = datetime.now(load(args.config).tz).date().isoformat()
         add(Path(args.site_dir), args.date, args.keep)
+
+
+if __name__ == "__main__":
+    cli()

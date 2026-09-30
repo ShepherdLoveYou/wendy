@@ -1,11 +1,12 @@
-"""快照：和上一份比的变化、历史快照归档。"""
+"""Snapshots: what changed since the previous one, and the daily archive. 快照：变化对比与归档。"""
 from __future__ import annotations
 
 import json
 from datetime import timedelta
 
-import snapshot as sn
 from conftest import FakeCanvas, announcement, item, pt
+
+from purrfessor import snapshot as sn
 
 T0 = pt("2026-10-05 06:00")
 T1 = pt("2026-10-05 12:00")
@@ -39,9 +40,9 @@ def test_no_prev_or_no_change_shows_no_changes_card(build):
 
 def test_recurring_tasks_and_natural_expiry_are_not_reported(build):
     prev = build(pt("2026-10-02 06:00"), FakeCanvas(planner=[item(1, 1001, "Due today", pt("2026-10-02 23:59"), submitted=True)]))
-    page = build(pt("2026-10-09 06:00"), FakeCanvas(), prev=prev)   # 一周后：旧的固定作业过期、新的生成
+    page = build(pt("2026-10-09 06:00"), FakeCanvas(), prev=prev)   # a week later: old recurring tasks expire, new ones appear
     body = page.html.split('id="changes"')[1] if 'id="changes"' in page.html else ""
-    assert "网上作业" not in body and "Due today" not in body
+    assert "Online homework" not in body and "Due today" not in body
 
 
 def test_state_is_embedded_for_the_next_run(build):
@@ -76,7 +77,13 @@ def test_history_links_render(build):
 
 def test_ai_extracted_announcement_items_do_not_cause_false_changes():
     base = {"generated": "2026-10-05T12:00:00-07:00", "announcements": {"1": {"title": "x", "course": "TEST 101"}},
-            "classes": [], "tasks": {"ann-1-1009": {"title": "填问卷", "course": "TEST 101",
-                                                    "due": "2026-10-09T23:59:00-07:00", "done": False, "source": "公告"}}}
-    cur = {**base, "generated": "2026-10-05T18:00:00-07:00", "tasks": {}}    # 这次 AI 没读出这一条
+            "classes": [], "tasks": {"ann-1-1009": {"title": "Fill in survey", "course": "TEST 101",
+                                                    "due": "2026-10-09T23:59:00-07:00", "done": False, "source": "announcement"}}}
+    cur = {**base, "generated": "2026-10-05T18:00:00-07:00", "tasks": {}}    # this time the AI didn't extract it
     assert sn.diff(base, cur) == {"since": base["generated"]}
+
+
+def test_snapshot_cli_add(tmp_path):
+    (tmp_path / "index.html").write_text("page")
+    sn.cli(["add", "--site-dir", str(tmp_path), "--date", "2026-10-05"])
+    assert (tmp_path / "archive" / "2026-10-05.html").read_text() == "page"
