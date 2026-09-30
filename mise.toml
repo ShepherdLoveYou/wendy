@@ -1,5 +1,6 @@
 # 本地开发：
 #   mise run today            生成并打开今日页面（明文，只在本地）
+#   mise run test             跑完整测试
 #   mise run encrypt          本地预览加密后的口令页
 #   mise run schedule-upload  改完 assistant/schedule.toml 后，上传到 GitHub Secret 并触发一次部署
 #
@@ -17,6 +18,10 @@ run = [
   "uv run --quiet --no-project --with-requirements assistant/requirements.txt python assistant/build_today.py --out _build/today/index.html",
   "open _build/today/index.html",
 ]
+
+[tasks.test]
+description = "用假数据跑完整测试（状态机、不变量、出错降级、前端脚本）"
+run = "uv run --quiet --no-project --with-requirements assistant/requirements.txt --with-requirements tests/requirements.txt pytest -q tests"
 
 [tasks.encrypt]
 description = "本地加密预览（和线上一样的 Staticrypt 口令页）"

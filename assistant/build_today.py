@@ -87,7 +87,7 @@ def course_label(context_name: str) -> str:
 
 def canvas_tasks(now: datetime, names: dict[int, str]) -> list[Task]:
     items = canvas_get("planner/items", {
-        "start_date": (now - timedelta(days=14)).date().isoformat(),
+        "start_date": (now - timedelta(days=120)).date().isoformat(),   # 逾期很久没交的也要留着
         "end_date": (now + timedelta(days=60)).date().isoformat(),
         "per_page": 100,
     })
@@ -97,6 +97,8 @@ def canvas_tasks(now: datetime, names: dict[int, str]) -> list[Task]:
         kind = it.get("plannable_type")
         when = parse_iso(it.get("plannable_date"))
         if kind == "announcement" or when is None:  # 公告单独处理，见 canvas_announcements
+            continue
+        if not isinstance(it.get("submissions"), dict) and when < now:   # 不需要在 Canvas 上提交的，过了就算了
             continue
         subs = it["submissions"] if isinstance(it.get("submissions"), dict) else {}
         override = it.get("planner_override") or {}
@@ -241,9 +243,13 @@ def person(display_name: str) -> str:
     return f"{first} {last}".strip()
 
 
+def banner_opener():
+    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
+
+
 def banner_classes(sections: set[tuple[str, str, str, str]]) -> tuple[list[dict], list[dict]]:
     """返回 (有固定上课时间的课, 没有固定时间的线上课)。"""
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
+    opener = banner_opener()
     call = lambda path, data=None: opener.open(f"{BANNER}/{path}", data=data, timeout=30).read()  # noqa: E731
     call("term/termSelection?mode=search")
     timed, online, selected_term = [], [], None
@@ -456,7 +462,7 @@ def where_html(c: dict) -> str:
     return " · ".join(parts)
 
 
-def task_html(t: Task, now: datetime, colors: dict) -> str:
+def task_html(t: Task, now: datetime, colors: dict, state: str = "") -> str:
     color = colors.get(t.course, "secondary")
     meta = [course_badge(t.course, colors), esc(t.source if t.manual else t.kind)]
     if t.points:
@@ -473,7 +479,8 @@ def task_html(t: Task, now: datetime, colors: dict) -> str:
     else:
         u = urgency(t.due - now)
         badge = f'<span class="badge {URGENCY_BADGE[u]} cd">{countdown_text(t.due - now)}</span>'
-    return (f'<div class="list-group-item task{" done" if t.done else ""}" data-due="{t.due.isoformat()}">'
+    return (f'<div class="list-group-item task{" done" if t.done else ""}" data-due="{t.due.isoformat()}" '
+            f'data-id="{esc(t.id)}" data-state="{state}">'
             f'<div class="row align-items-center g-3"><div class="col-auto">{lead}</div>'
             f'<div class="col min-w-0"><div class="fw-medium title">{link(t.zh or t.title, t.url)}</div>'
             f'{f"<div class=\"text-secondary small original\">{esc(t.title)}</div>" if t.zh and t.zh != t.title else ""}'
@@ -545,7 +552,9 @@ def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], ta
     first, last = as_date(cfg["term"]["week1_monday"]), as_date(cfg["term"]["last_class_day"])
     total_weeks = (last - first).days // 7 + 1
     term_pct = max(0, min(100, round((today - first).days / max((last - first).days, 1) * 100)))
-    overdue = sorted((t for t in tasks if not t.done and not t.manual and t.due < now), key=lambda t: t.due)
+    term_start = as_date(cfg["term"]["week1_monday"]) - timedelta(days=14)   # 上学期的旧账不算
+    overdue = sorted((t for t in tasks if not t.done and not t.manual and t.due < now and t.due.date() >= term_start),
+                     key=lambda t: t.due)
     pending = sorted((t for t in tasks if not t.done and t.due >= now - timedelta(hours=12) and t not in overdue),
                      key=lambda t: t.due)
     done = sorted((t for t in tasks if t.done and t.due >= now - timedelta(days=3)), key=lambda t: t.due)
@@ -600,23 +609,23 @@ def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], ta
     body = []
     if overdue:
         body.append(f'<div class="list-group-header text-danger">逾期未交 · {len(overdue)}</div>')
-        body += [task_html(t, now, colors) for t in overdue]
+        body += [task_html(t, now, colors, "overdue") for t in overdue]
     groups: dict[date, list[Task]] = {}
     for t in soon:
         groups.setdefault(t.due.date(), []).append(t)
     for day, ts in groups.items():
         body.append(f'<div class="list-group-header{" text-primary" if day == today else ""}">'
                     f'{day_heading(day, today)} · {len(ts)}</div>')
-        body += [task_html(t, now, colors) for t in ts]
+        body += [task_html(t, now, colors, "soon") for t in ts]
     if not body:
         body.append('<div class="list-group-item text-secondary">两周内没有要交的 🎉</div>')
     extra = ""
     if later:
         extra += (f'<details class="card-footer"><summary class="text-primary fw-medium">更远的 {len(later)} 项</summary>'
-                  f'<div class="list-group list-group-flush mt-2">{"".join(task_html(t, now, colors) for t in later)}</div></details>')
+                  f'<div class="list-group list-group-flush mt-2">{"".join(task_html(t, now, colors, "later") for t in later)}</div></details>')
     if done:
         extra += (f'<details class="card-footer"><summary class="text-success fw-medium">最近已交 {len(done)} 项</summary>'
-                  f'<div class="list-group list-group-flush mt-2">{"".join(task_html(t, now, colors) for t in done)}</div></details>')
+                  f'<div class="list-group list-group-flush mt-2">{"".join(task_html(t, now, colors, "done") for t in done)}</div></details>')
     p.append(f'<div class="col-12"><section id="todo" class="card"><div class="card-header"><h3 class="card-title">'
              f'<i class="ti ti-checklist"></i> 接下来两周要交的</h3><div class="card-actions text-secondary small">'
              f'Top Hat / iMath 做完请自己打勾</div></div><div class="list-group list-group-flush">{"".join(body)}</div>'
@@ -677,12 +686,12 @@ def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], ta
                 .replace("{{DATA}}", json.dumps(data, ensure_ascii=False).replace("</", "<\\/")))
 
 
-def main():
+def main(argv: list[str] | None = None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default="_build/today/index.html")
     ap.add_argument("--config", default=str(HERE / "schedule.toml"))
     ap.add_argument("--now", help="调试用：假装现在是这个时间（ISO 格式）")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     now = datetime.fromisoformat(args.now).astimezone(TZ) if args.now else datetime.now(TZ)
     warnings: list[str] = []

@@ -43,7 +43,11 @@ jobs:
           cache-dependency-path: assistant/requirements.txt
 
       - name: Install Python deps
-        run: pip install -r assistant/requirements.txt
+        run: pip install -r assistant/requirements.txt -r tests/requirements.txt
+
+      # 先用假数据把状态机和不变量全测一遍；测试不过就不部署，线上保留上一个好的版本
+      - name: Test
+        run: pytest -q tests
 
       # 课表和明文页面只存在于这台临时机器上，不会提交到公开仓库
       - name: Build today page from Canvas
