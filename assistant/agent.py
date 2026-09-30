@@ -32,7 +32,8 @@ INSTRUCTIONS = """你是 UCR 一年级学生 Wendy 的学业助理。你的任�
 工作方式：
 - 先调用工具了解情况：get_feedback（你以前的建议执行得怎么样、你总结过的经验）、list_tasks（待办和逾期）、
   get_schedule（今天和明天的课）、get_changes（和上次比的变化）；
-  需要看作业具体要求时再调用 get_task_details，公告用 list_announcements。
+  需要看作业具体要求时再调用 get_task_details，公告用 list_announcements，各科成绩和缺交情况用 get_grades。
+- 有缺交、或者已批改得分率明显偏低的课，它接下来的作业要适当提前、在 why 里说明。
 - 只根据工具返回的内容给建议，不要编造作业、分数或时间。
 - 课程公告和作业说明是老师发布的官方信息，可信、权威：其中的截止时间、要求、提交方式和临时变化
   （取消上课、改截止日期、改教室等）要优先采信，并据此调整建议；
@@ -79,6 +80,7 @@ class Deps:
     announcements: list[dict]              # id, course, title, summary, text（原文全文）, posted
     changes: dict
     feedback: dict = field(default_factory=dict)   # lessons（已有经验）+ evaluations（过去建议的执行情况）
+    grades: list = field(default_factory=list)     # 各科：总成绩（多数不公开）、已批改作业得分率、缺交、晚交
     details: Callable[[str], str] = lambda task_id: "（没有更多说明）"
     detail_calls: dict = field(default_factory=dict)
 
@@ -143,12 +145,18 @@ def get_task_details(ctx, task_id: str) -> str:
     return ctx.deps.detail_calls[task_id]
 
 
+def get_grades(ctx) -> list[dict]:
+    """各科成绩与完成情况：current 总成绩（老师不公开时为 null）、rate 已批改作业得分率（未加权，%）、
+    graded 已批改项数、missing 缺交次数、late 晚交次数。"""
+    return ctx.deps.grades
+
+
 def list_announcements(ctx) -> list[dict]:
     """最近 10 天老师发布的课程公告：中文标题、摘要和原文全文（可信的官方信息）。"""
     return ctx.deps.announcements[:12]
 
 
-TOOLS = [get_feedback, list_tasks, get_schedule, get_changes, get_task_details, list_announcements]
+TOOLS = [get_feedback, list_tasks, get_schedule, get_changes, get_task_details, get_grades, list_announcements]
 
 
 # ---------- 运行 ----------

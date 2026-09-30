@@ -26,6 +26,7 @@ Wendy 的大学规划与进度表 · 口令保护的加密静态站点（UC Rive
 - **课程表**：自动从 UCR 选课系统读取上课时间和教室，每天顶部一行是当天的截止；可以翻周、切换日视图和列表
 - **公告**：最近的课程公告和摘要；正文里写了截止日期的句子会被自动识别，并加进待办
 - **今日简报**（自改进 AI 智能体）：今天先做哪 3 件事、为什么、第一步做什么、有什么风险；以及它从过去的执行情况里学到的经验
+- **成绩与完成情况**：各科总成绩（老师公开时）、已批改作业的得分率（未加权）、缺交和晚交次数
 - **和上次比**：新作业、刚交掉的、改了截止时间的、被撤下的、新公告、课表变化（代码算出，不依赖 AI）
 - **历史快照**：保留最近 30 天，每天一份，可以翻看
 
@@ -47,7 +48,7 @@ GitHub Actions（定时）
 按业界通行做法设计（参考 Anthropic *Building Effective Agents*）：
 
 - **确定的事实交给代码**：逾期、倒计时、课表、和上次比的变化都由代码算出并有测试；智能体只做需要判断的部分
-- **只读工具白名单**：`get_feedback`、`list_tasks`、`get_schedule`、`get_changes`、`get_task_details`、`list_announcements`，不能提交或修改任何东西
+- **只读工具白名单**：`get_feedback`、`get_grades`、`list_tasks`、`get_schedule`、`get_changes`、`get_task_details`、`list_announcements`，不能提交或修改任何东西
 - **结构化输出 + 双重校验**：Pydantic 结构由框架校验，引用不存在的作业会让模型重试一次；代码再过滤一遍（未知作业、重复项、超长文字）
 - **自改进闭环**：每份简报的建议存进加密快照；下次运行由**代码**核对执行情况（已交 / 错过 / 还没到期 / Canvas 之外看不到），
   智能体据此更新最多 5 条"经验"（每条 ≤80 字），经验随快照一代代传下去；智能体失败或没给新经验时，旧经验原样保留
@@ -88,6 +89,21 @@ mise run schedule-upload  # 改完 assistant/schedule.toml 后上传到 Secret �
 ```
 
 本地的 `.env`（已被 git 忽略）里放 `CANVAS_TOKEN`、`SITE_PASSWORD`，可选 `GEMINI_API_KEY`。依赖见 `assistant/requirements.txt`，mise 任务会用 uv 自动安装。
+
+### 维护
+
+- 每次部署前先跑测试（`deploy.yml`），任何 PR 也会跑测试（`test.yml`，不接触 Secret）
+- Dependabot（`.github/dependabot.yml`）每周六检查 Actions 和 Python 依赖的新版本，同类升级合成一个 PR；
+  测试通过后在 GitHub 上点合并即可
+
+### 从首页跳到今日页面
+
+今日页面的导航栏里有"大学规划"链接回首页。首页是另一份加密页面，要从首页跳过来，
+在首页的明文 HTML 里加一个链接，然后按上面的"更新流程"重新加密即可：
+
+```html
+<a href="today/">📅 今日待办</a>
+```
 
 ### 注意
 

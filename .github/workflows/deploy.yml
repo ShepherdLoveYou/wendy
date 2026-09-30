@@ -28,19 +28,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: assistant/requirements.txt
+          cache-dependency-path: |
+            assistant/requirements.txt
+            tests/requirements.txt
 
       - name: Install Python deps
         run: pip install -r assistant/requirements.txt -r tests/requirements.txt
@@ -51,7 +53,7 @@ jobs:
 
       - name: Setup Pages
         id: pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       # 快照存在网站本身：取回上一份（加密的）页面和历史快照，在这台临时机器上解密，只用来算"和上次比的变化"
       - name: Restore last snapshot from the live site
@@ -78,7 +80,7 @@ jobs:
           BASE_PATH=$(python -c "import os,urllib.parse;print(urllib.parse.urlparse(os.environ['BASE_URL']).path.rstrip('/'))")
           python assistant/build_today.py --out _build/today/index.html \
             --prev _prev/plain/index.html --archive-dates _prev/archive.json \
-            --archive-base "$BASE_PATH/today/archive/"
+            --archive-base "$BASE_PATH/today/archive/" --home-url "$BASE_PATH/"
 
       - name: Encrypt and assemble site
         env:
@@ -102,13 +104,13 @@ jobs:
           python assistant/snapshot.py add --site-dir _site/today --date "$(TZ=America/Los_Angeles date +%F)" --keep 30
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: '_site'
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
   # 公开仓库 60 天没有提交，GitHub 会停用定时任务；这里在每次定时运行时通过 API 提前续期（不产生提交）
   workflow-keepalive:

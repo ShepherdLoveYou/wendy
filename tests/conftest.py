@@ -35,9 +35,11 @@ def z(dt: datetime) -> str:
 # ---------- 假 Canvas ----------
 
 COURSES = [
-    {"id": 1001, "course_code": "TEST_101_001_26F", "sections": [
+    {"id": 1001, "course_code": "TEST_101_001_26F", "enrollments": [{"type": "student", "computed_current_score": 91.5}],
+     "sections": [
         {"name": "TEST_101_001_26F - INTRO TESTING"}, {"name": "TEST_101_021_26F - INTRO TESTING"}]},
-    {"id": 1002, "course_code": "DEMO_002A_010_26F", "sections": [
+    {"id": 1002, "course_code": "DEMO_002A_010_26F", "enrollments": [{"type": "student", "computed_current_score": None}],
+     "sections": [
         {"name": "DEMO_002A_010_26F - DEMO"}, {"name": "DEMO_002A_021_26F - DEMO"}]},
     {"id": 1003, "course_code": "Orientation 2026", "sections": []},   # 不是正式课，应被忽略
 ]
@@ -66,6 +68,8 @@ class FakeCanvas:
     planner: list = field(default_factory=list)
     announcements: list = field(default_factory=list)
     fail: int | None = None          # 设成 401 之类，模拟 token 失效
+    submissions: dict = field(default_factory=dict)   # 课程 id → 提交记录（成绩）
+    grades_fail: bool = False
     calls: list = field(default_factory=list)
 
     def get(self, path, params=None):
@@ -84,6 +88,10 @@ class FakeCanvas:
             codes = set(params["context_codes[]"])
             return [a for a in self.announcements if a["context_code"] in codes
                     and lo <= datetime.fromisoformat(a["posted_at"].replace("Z", "+00:00")).date() <= hi]
+        if path.startswith("courses/") and path.endswith("/students/submissions"):
+            if self.grades_fail:
+                raise urllib.error.HTTPError(path, 403, "forbidden", {}, None)
+            return self.submissions.get(int(path.split("/")[1]), [])
         if path.startswith("courses/") and "/assignments/" in path:
             return {"description": "<p>Write a 1500-word essay. <b>Rubric</b> attached.</p>"}
         raise AssertionError(f"unexpected Canvas path {path}")

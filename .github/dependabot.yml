@@ -1,0 +1,23 @@
+# 每周检查一次 GitHub Actions 和 Python 依赖的新版本，同类升级合成一个 PR；
+# PR 会先跑 .github/workflows/test.yml 的测试，通过后在 GitHub 上点合并即可
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: saturday
+      timezone: America/Los_Angeles
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directories: ["/assistant", "/tests"]
+    schedule:
+      interval: weekly
+      day: saturday
+      timezone: America/Los_Angeles
+    groups:
+      python:
+        patterns: ["*"]

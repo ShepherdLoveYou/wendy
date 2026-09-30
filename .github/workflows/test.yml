@@ -1,0 +1,24 @@
+name: Tests
+
+# Dependabot 的升级 PR（以及任何 PR）先在这里跑测试；不部署、不接触任何 Secret
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            assistant/requirements.txt
+            tests/requirements.txt
+      - run: pip install -r assistant/requirements.txt -r tests/requirements.txt
+      - run: pytest -q tests

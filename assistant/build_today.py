@@ -112,6 +112,36 @@ def canvas_tasks(now: datetime, names: dict[int, str]) -> list[Task]:
     return tasks
 
 
+def canvas_grades(courses: list[dict], names: dict[int, str]) -> list[dict]:
+    """各科成绩和完成情况（只读）。总成绩多数课老师不公开；已评分作业的得分率由逐项得分算出（未加权）。"""
+    out = []
+    for c in courses:
+        if not SECTION_RE.match(c.get("course_code", "")):
+            continue                                   # 只看正式课，跳过迎新之类
+        enr = next((e for e in c.get("enrollments") or [] if e.get("type") == "student"), {})
+        subs = canvas_get(f"courses/{c['id']}/students/submissions",
+                          {"student_ids[]": "self", "include[]": "assignment", "per_page": 100})
+        graded = [s for s in subs if s.get("score") is not None and (s.get("assignment") or {}).get("points_possible")
+                  and not (s.get("assignment") or {}).get("omit_from_final_grade")]
+        earned = sum(s["score"] for s in graded)
+        possible = sum(s["assignment"]["points_possible"] for s in graded)
+        out.append({"course": names.get(c["id"]) or course_label(c.get("course_code", "")),
+                    "current": enr.get("computed_current_score"),
+                    "graded": len(graded), "earned": round(earned, 2), "possible": round(possible, 2),
+                    "rate": round(earned / possible * 100, 1) if possible else None,
+                    "missing": sum(bool(s.get("missing")) for s in subs),
+                    "late": sum(bool(s.get("late")) for s in subs)})
+    # 同一门课在 Canvas 上可能分成两个（大课 + 讨论课），按显示名合并
+    merged: dict[str, dict] = {}
+    for g in out:
+        m = merged.setdefault(g["course"], {**g, "graded": 0, "earned": 0, "possible": 0, "missing": 0, "late": 0})
+        for k in ("graded", "earned", "possible", "missing", "late"):
+            m[k] += g[k]
+        m["current"] = m["current"] if m["current"] is not None else g["current"]
+        m["rate"] = round(m["earned"] / m["possible"] * 100, 1) if m["possible"] else None
+    return sorted(merged.values(), key=lambda g: g["course"])
+
+
 # ---------- 公告：列出来，并从正文里找截止日期 ----------
 
 MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
@@ -669,9 +699,32 @@ def changes_card(changes: dict, colors: dict) -> str:
             f'<div class="list-group list-group-flush">{items}</div></section></div>')
 
 
+def grades_card(grades: list[dict], colors: dict) -> str:
+    if not grades:
+        return ""
+    rows = []
+    for g in grades:
+        cur = (f'<span class="h3 mb-0">{g["current"]:.1f}%</span>' if g["current"] is not None
+               else '<span class="text-secondary">老师未公开</span>')
+        rate = (f'{g["rate"]:.0f}%（{g["earned"]:g}/{g["possible"]:g}，{g["graded"]} 项）' if g["rate"] is not None
+                else "还没有批改的作业")
+        flags = (f'<span class="badge bg-red-lt">缺交 {g["missing"]}</span> ' if g["missing"] else "") + \
+                (f'<span class="badge bg-orange-lt">晚交 {g["late"]}</span>' if g["late"] else "")
+        rows.append(f'<div class="list-group-item"><div class="row g-3 align-items-center">'
+                    f'<div class="col-12 col-sm-3">{course_badge(g["course"], colors)}</div>'
+                    f'<div class="col-6 col-sm-3"><div class="text-secondary small">总成绩</div>{cur}</div>'
+                    f'<div class="col-6 col-sm-4"><div class="text-secondary small">已批改作业得分率</div>{rate}</div>'
+                    f'<div class="col-12 col-sm-2 text-sm-end">{flags or '<span class="badge bg-green-lt">没有缺交</span>'}</div>'
+                    f'</div></div>')
+    return (f'<div class="col-12"><section id="grades" class="card"><div class="card-header"><h3 class="card-title">'
+            f'<i class="ti ti-chart-bar me-1"></i>成绩与完成情况</h3><div class="card-actions text-secondary small">'
+            f'得分率按已批改作业直接相加，未按各科权重计算</div></div>'
+            f'<div class="list-group list-group-flush">{"".join(rows)}</div></section></div>')
+
+
 def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], tasks: list[Task],
            announcements: list[dict], warnings: list[str], ai_model: str = "", brief=None, changes=None,
-           state=None, archive=(), archive_base: str = "archive/") -> str:
+           state=None, archive=(), archive_base: str = "archive/", grades=(), home_url: str = "../") -> str:
     today = now.date()
     holidays = {str(h) for h in cfg["term"].get("holidays", [])}
     colors = course_colors([c["course"] for c in classes + online] + [t.course for t in tasks])
@@ -704,7 +757,9 @@ def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], ta
              '<a class="nav-link" href="#today"><i class="ti ti-sun"></i> 今天</a>'
              '<a class="nav-link" href="#todo"><i class="ti ti-checklist"></i> 待办</a>'
              '<a class="nav-link" href="#timetable"><i class="ti ti-calendar-week"></i> 课程表</a>'
-             '<a class="nav-link" href="#news"><i class="ti ti-speakerphone"></i> 公告</a></div></nav>')
+             '<a class="nav-link" href="#grades"><i class="ti ti-chart-bar"></i> 成绩</a>'
+             '<a class="nav-link" href="#news"><i class="ti ti-speakerphone"></i> 公告</a>'
+             f'<a class="nav-link" href="{esc(home_url)}"><i class="ti ti-map-2"></i> 大学规划</a></div></nav>')
 
     p.append('<div class="row row-cards">')
     p.append(stat_card("school", "blue", len(today_cls), "今天的课", "#today"))
@@ -755,6 +810,8 @@ def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], ta
              f'<i class="ti ti-checklist"></i> 接下来两周要交的</h3><div class="card-actions text-secondary small">'
              f'Top Hat / iMath 做完请自己打勾</div></div><div class="list-group list-group-flush">{"".join(body)}</div>'
              f'{extra}</section></div>')
+
+    p.append(grades_card(list(grades), colors))
 
     # 课程表（FullCalendar）
     online_note = ""
@@ -823,6 +880,7 @@ def main(argv: list[str] | None = None):
     ap.add_argument("--prev", help="上一份（已解密的）页面，用来算和上次比的变化")
     ap.add_argument("--archive-dates", help="线上已有的历史快照日期（JSON：{\"dates\": [...]}）")
     ap.add_argument("--archive-base", default="archive/", help="历史快照的链接前缀")
+    ap.add_argument("--home-url", default="../", help="网站首页（大学规划）的链接")
     args = ap.parse_args(argv)
 
     now = datetime.fromisoformat(args.now).astimezone(TZ) if args.now else datetime.now(TZ)
@@ -835,12 +893,13 @@ def main(argv: list[str] | None = None):
         cfg = tomllib.load(f)
     names = {int(k): v for k, v in cfg.get("courses", {}).items()}
 
-    courses, tasks, announcements, ai_model = [], [], [], ""
+    courses, tasks, announcements, ai_model, grades = [], [], [], "", []
     if not os.environ.get("CANVAS_TOKEN"):
         warnings.append("没读到 Canvas：没有设置 CANVAS_TOKEN。下面只有课表和固定作业")
     else:
         try:
-            courses = canvas_get("courses", {"enrollment_state": "active", "include[]": "sections", "per_page": 100})
+            courses = canvas_get("courses", {"enrollment_state": "active", "include[]": ["sections", "total_scores"],
+                                             "per_page": 100})
             tasks = canvas_tasks(now, names)
             announcements = canvas_announcements(now, names, courses)
             ai = enrich(now, tasks, announcements)
@@ -848,6 +907,10 @@ def main(argv: list[str] | None = None):
                 apply_ai(ai, tasks, announcements)
                 ai_model = ai["model"]
             tasks += announcement_tasks(announcements, tasks, now)
+            try:
+                grades = canvas_grades(courses, names)
+            except Exception as e:  # noqa: BLE001 - 成绩读不到不影响其他部分
+                print(f"  · 成绩没读到：{type(e).__name__}")
         except urllib.error.HTTPError as e:
             reason = "token 失效或过期（401），需要重新生成" if e.code == 401 else f"返回 HTTP {e.code}"
             warnings.append(f"没读到 Canvas：{reason}。下面只有课表和固定作业")
@@ -876,6 +939,7 @@ def main(argv: list[str] | None = None):
     today_s = now.date().isoformat()
     memory = carry_memory(prev_state, state, today_s)
     deps = agent_deps(now, cfg, tasks, classes, announcements, changes)
+    deps.grades = grades
     deps.feedback = {"lessons": memory["lessons"], "evaluations": memory["feedback"]}
     brief, brief_info = brief_agent.run_brief(deps)
     state.update(carry_memory(prev_state, state, today_s, brief))
@@ -891,7 +955,8 @@ def main(argv: list[str] | None = None):
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render(now, cfg, classes, online, tasks, announcements, warnings, ai_model,
-                          brief=brief, changes=changes, state=state, archive=archive, archive_base=args.archive_base),
+                          brief=brief, changes=changes, state=state, archive=archive, archive_base=args.archive_base,
+                          grades=grades, home_url=args.home_url),
                    encoding="utf-8")
     count = lambda src: sum(t.source == src for t in tasks)  # noqa: E731
     print(f"✓ {out}  Canvas {count('Canvas')} 项 · 公告里读到 {count('公告')} 项 · "

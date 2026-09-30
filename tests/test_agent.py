@@ -42,7 +42,7 @@ def brief_json(**over):
 
 
 def test_tools_are_a_fixed_read_only_allowlist():
-    assert {t.__name__ for t in ag.TOOLS} == {"get_feedback", "list_tasks", "get_schedule", "get_changes",
+    assert {t.__name__ for t in ag.TOOLS} == {"get_feedback", "get_grades", "list_tasks", "get_schedule", "get_changes",
                                                "get_task_details", "list_announcements"}
 
 
