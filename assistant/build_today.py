@@ -229,11 +229,18 @@ def agent_deps(now: datetime, cfg: dict, tasks: list[Task], classes: list[dict],
                             changes=changes, details=lambda tid: task_details(by_id[tid]) if tid in by_id else "")
 
 
+def strip_course_prefix(title: str, course: str) -> str:
+    """'CS 005：Lab 0' / 'CS005 - Lab 0' → 'Lab 0'（课程名已经用标签显示了）。"""
+    pattern = r"^\s*" + r"\s*".join(map(re.escape, course.split())) + r"\s*[:：\-–·|]?\s*"
+    rest = re.sub(pattern, "", title, flags=re.I)
+    return rest or title
+
+
 def apply_ai(ai: dict, tasks: list[Task], announcements: list[dict]) -> None:
     """把 Gemini 的结果并进来：中文标题、公告摘要；AI 读出的截止事项替换掉正则识别的结果。"""
     zh = {str(x.get("id")): x.get("zh", "") for x in ai.get("tasks") or [] if isinstance(x, dict)}
     for t in tasks:
-        t.zh = (zh.get(t.id) or "").strip()
+        t.zh = strip_course_prefix((zh.get(t.id) or "").strip(), t.course)
     by_id = {str(x.get("id")): x for x in ai.get("announcements") or [] if isinstance(x, dict)}
     for a in announcements:
         x = by_id.get(str(a["id"]))
@@ -590,26 +597,32 @@ def brief_card(brief, tasks: list[Task], colors: dict) -> str:
     """智能体写的今日简报。所有引用的作业 id 都已经过校验。"""
     by_id = {t.id: t for t in tasks}
     pri = "".join(
-        f'<div class="list-group-item"><div class="row g-3 align-items-start"><div class="col-auto">'
-        f'<span class="avatar avatar-sm bg-primary-lt fw-bold">{i}</span></div><div class="col min-w-0">'
-        f'<div class="fw-medium">{course_badge(by_id[p.task_id].course, colors)} '
-        f'{link(by_id[p.task_id].zh or by_id[p.task_id].title, by_id[p.task_id].url)}</div>'
-        f'<div class="text-secondary small mt-1">{esc(p.why)}</div>'
-        f'<div class="small mt-1"><i class="ti ti-player-play text-primary"></i> {esc(p.first_step)}</div></div></div></div>'
+        f'<div class="list-group-item"><div class="row g-3 align-items-start">'
+        f'<div class="col-auto"><span class="brief-num">{i}</span></div><div class="col min-w-0">'
+        f'<div class="fw-medium d-flex flex-wrap align-items-center gap-2">{course_badge(by_id[p.task_id].course, colors)}'
+        f'<span>{link(by_id[p.task_id].zh or by_id[p.task_id].title, by_id[p.task_id].url)}</span></div>'
+        f'<div class="text-secondary mt-2">{esc(p.why)}</div>'
+        f'<div class="brief-step mt-2"><i class="ti ti-arrow-right"></i><span>{esc(p.first_step)}</span></div>'
+        f'</div></div></div>'
         for i, p in enumerate(brief.priorities, 1))
     plan = "".join(
-        f'<div class="list-group-item py-2"><div class="row g-3"><div class="col-auto fw-bold time-col">'
-        f'{esc(b.start)}–{esc(b.end)}</div><div class="col min-w-0">{esc(b.activity)}</div></div></div>' for b in brief.plan)
-    risks = "".join(f'<div class="alert alert-warning py-2 px-3 mb-2 small"><i class="ti ti-alert-triangle"></i> {esc(r)}</div>'
+        f'<div class="list-group-item"><div class="row g-3 align-items-center">'
+        f'<div class="col-auto"><span class="badge bg-blue-lt brief-time">{esc(b.start)}–{esc(b.end)}</span></div>'
+        f'<div class="col min-w-0">{esc(b.activity)}</div></div></div>' for b in brief.plan)
+    risks = "".join(f'<div class="alert alert-warning mb-2"><i class="ti ti-alert-triangle me-1"></i>{esc(r)}</div>'
                     for r in brief.risks)
+    groups = ""
+    if pri:
+        groups += f'<div class="list-group-header">先做这几件</div>{pri}'
+    if plan:
+        groups += f'<div class="list-group-header">今天的时间安排</div>{plan}'
     return (f'<div class="col-12"><section id="brief" class="card"><div class="card-header">'
-            f'<h3 class="card-title"><i class="ti ti-compass"></i> 今日简报</h3>'
+            f'<h3 class="card-title"><i class="ti ti-compass me-1"></i>今日简报</h3>'
             f'<div class="card-actions"><span class="badge bg-purple-lt">AI Agent 智能体生成 · 仅供参考</span></div></div>'
-            f'<div class="card-body pb-2"><div class="h3 mb-0">{esc(brief.headline)}</div></div>'
-            + (f'<div class="list-group-header">先做这几件</div><div class="list-group list-group-flush">{pri}</div>' if pri else "")
-            + (f'<div class="list-group-header">今天的时间安排</div><div class="list-group list-group-flush">{plan}</div>' if plan else "")
-            + (f'<div class="card-body pb-1">{risks}</div>' if risks else "")
-            + (f'<div class="card-footer text-secondary small"><i class="ti ti-history"></i> {esc(brief.changes)}</div>'
+            f'<div class="card-body"><p class="brief-headline">{esc(brief.headline)}</p></div>'
+            + (f'<div class="list-group list-group-flush">{groups}</div>' if groups else "")
+            + (f'<div class="card-body">{risks}</div>' if risks else "")
+            + (f'<div class="card-footer text-secondary"><i class="ti ti-history me-1"></i>{esc(brief.changes)}</div>'
                if brief.changes else "")
             + '</section></div>')
 

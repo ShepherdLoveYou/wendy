@@ -19,7 +19,8 @@ MODELS = [m for m in [os.environ.get("GEMINI_MODEL")] if m] + [
 PROMPT = """你是 UCR（加州大学河滨分校）一年级学生 Wendy 的学业助理。现在是 {now}（美国太平洋时间）。
 下面是她 Canvas 上的作业标题和最近的课程公告（JSON）。请完成：
 
-1. tasks：把每个作业标题翻译成简洁自然的简体中文。只保留编号、课程代码和平台/产品名的原文，描述性的词一律翻译。例如：
+1. tasks：把每个作业标题翻译成简洁自然的简体中文。不要在前面加课程名（页面上另有课程标签）。
+   只保留编号、课程代码和平台/产品名的原文，描述性的词一律翻译。例如：
    "Week 2: Attendance Quiz" → "第 2 周：出勤测验"
    "Fall Mid-Quarter Assignment" → "秋季期中作业"
    "EVERYONE SUBMIT: Lecture Reflection 9/29" → "全员提交：9/29 课堂反思"

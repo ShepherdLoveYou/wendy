@@ -42,6 +42,16 @@
   .preview.open { display: block; }
   #calendar .deadline { font-weight: 600; }
   .term-progress { width: 9rem; }
+  /* 今日简报 */
+  .brief-headline { margin: 0; padding-left: .875rem; border-left: 3px solid var(--tblr-primary);
+    font-size: 1.0625rem; font-weight: 600; line-height: 1.7; }
+  .brief-num { display: inline-grid; place-items: center; width: 1.75rem; height: 1.75rem; border-radius: 50%;
+    font-size: .8125rem; font-weight: 700; background: var(--tblr-primary-lt); color: var(--tblr-primary); }
+  .brief-step { display: flex; gap: .5rem; align-items: baseline; line-height: 1.6; }
+  .brief-step .ti { color: var(--tblr-primary); flex: none; }
+  .brief-time { font-variant-numeric: tabular-nums; min-width: 6.5rem; font-size: .8125rem; padding: .35rem .5rem; }
+  #brief .list-group-item { padding-top: 1rem; padding-bottom: 1rem; }
+  #brief .list-group-header { padding-top: .75rem; padding-bottom: .5rem; }
   /* 魔法猫猫小提示：文字叠在图片右下角的空白处（位置沿用原表情包网页） */
   .meme { position: relative; max-width: 560px; aspect-ratio: 1170 / 792; container-type: inline-size;
     background: #fff var(--cat) center / 100% 100% no-repeat; border: 1px solid var(--tblr-border-color);
