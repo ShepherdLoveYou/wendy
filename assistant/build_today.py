@@ -221,7 +221,8 @@ def agent_deps(now: datetime, cfg: dict, tasks: list[Task], classes: list[dict],
         return [{"course": c["course"], "kind": c.get("kind", ""), "where": c.get("where", ""),
                  "start": f"{c['start_dt']:%H:%M}", "end": f"{c['end_dt']:%H:%M}"} for c in classes_on(day, classes, holidays)]
     anns = [{"id": str(a["id"]), "course": a["course"], "title": a.get("zh_title") or a["title"],
-             "summary": a.get("summary") or a["preview"], "posted": a["when"].isoformat()}
+             "summary": a.get("summary") or a["preview"], "text": a.get("text", "")[:3000],
+             "posted": a["when"].isoformat()}
             for a in announcements if a["when"] and a["when"] >= now - timedelta(days=10)]
     return brief_agent.Deps(now=now, tasks=views, classes_today=cls(now.date()),
                             classes_tomorrow=cls(now.date() + timedelta(days=1)), announcements=anns,
@@ -603,7 +604,7 @@ def brief_card(brief, tasks: list[Task], colors: dict) -> str:
                     for r in brief.risks)
     return (f'<div class="col-12"><section id="brief" class="card"><div class="card-header">'
             f'<h3 class="card-title"><i class="ti ti-compass"></i> 今日简报</h3>'
-            f'<div class="card-actions"><span class="badge bg-purple-lt">AI 生成 · 仅供参考</span></div></div>'
+            f'<div class="card-actions"><span class="badge bg-purple-lt">AI Agent 智能体生成 · 仅供参考</span></div></div>'
             f'<div class="card-body pb-2"><div class="h3 mb-0">{esc(brief.headline)}</div></div>'
             + (f'<div class="list-group-header">先做这几件</div><div class="list-group list-group-flush">{pri}</div>' if pri else "")
             + (f'<div class="list-group-header">今天的时间安排</div><div class="list-group list-group-flush">{plan}</div>' if plan else "")
@@ -849,7 +850,8 @@ def main(argv: list[str] | None = None):
     state = make_state(now, tasks, announcements, classes)
     prev_state = load_prev_state(args.prev)
     changes = diff(prev_state, state)
-    print(f"  · 快照对比：{'没有上一份（第一次运行或解密失败）' if not prev_state else f'{len(changes) - 1 if changes else 0} 类变化' if changes else '和上一份一样'}")
+    kinds = [k for k in changes if k != "since"]
+    print(f"  · 快照对比：{'没有上一份（第一次运行或解密失败）' if not prev_state else f'{len(kinds)} 类变化：' + '、'.join(kinds) if kinds else '和上一份一样'}")
     brief, brief_info = brief_agent.run_brief(agent_deps(now, cfg, tasks, classes, announcements, changes))
     print(f"  · 今日简报：{brief_info}")
     archive = []
