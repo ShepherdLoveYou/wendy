@@ -42,6 +42,15 @@
   .preview.open { display: block; }
   #calendar .deadline { font-weight: 600; }
   .term-progress { width: 9rem; }
+  /* 魔法猫猫小提示：文字叠在图片右下角的空白处（位置沿用原表情包网页） */
+  .meme { position: relative; max-width: 560px; aspect-ratio: 1170 / 792; container-type: inline-size;
+    background: #fff var(--cat) center / 100% 100% no-repeat; border: 1px solid var(--tblr-border-color);
+    border-radius: 12px; overflow: hidden; }
+  .meme-cap { position: absolute; left: 38.4%; top: 69.4%; width: 57.5%; height: 20%; display: grid;
+    align-content: center; justify-items: center; color: #111; font-weight: 500; font-size: 4.7cqw; line-height: 1.28;
+    white-space: nowrap; font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif; }
+  .meme-num { font-variant-numeric: tabular-nums; }
+  .meme-foot { max-width: 560px; }
   @media (max-width: 575.98px) { .cd { min-width: 4.5rem; } .page-title { font-size: 1.5rem; } }
 </style>
 </head>
@@ -112,8 +121,25 @@
     else setNext("next-due", "", "—", "近期没有要交的 🎉", "", "");
   }
 
+  // 魔法猫猫小提示：整数周，从加州时间 1 月 1 日零点算，跨年自动换成新的一年
+  function renderMeme(now) {
+    var M = D.meme, el = document.getElementById("meme");
+    if (!M || !M.start || !el) return;
+    var y = M.year, start = M.start, end = M.next;
+    if (now >= M.next) { y += 1; start = M.next; end = M.next + 365 * 864e5; }
+    var ms = now - start, weeks = Math.floor(ms / 6048e5), days = Math.floor(ms % 6048e5 / 864e5);
+    var pct = Math.min(100, ms / (end - start) * 100);
+    document.querySelector(".meme-year").textContent = y;
+    document.querySelector(".meme-num").textContent = weeks;
+    document.querySelector(".meme-elapsed").textContent = weeks + " 周 " + days + " 天";
+    document.querySelector(".meme-pct").textContent = pct.toFixed(1) + "%";
+    document.querySelector(".meme-bar").style.width = pct.toFixed(2) + "%";
+    el.setAttribute("aria-label", "小提示：你已经在" + y + "浪费了" + weeks + "个星期了");
+  }
+
   function tick() {
     var now = Date.now();
+    renderMeme(now);
     document.querySelectorAll(".task[data-due]:not(.done)").forEach(function (li) {
       var ms = new Date(li.dataset.due) - now, b = li.querySelector(".cd");
       if (b) { b.textContent = ms < 0 ? "已截止" : fmt(ms); setBadge(b, badgeFor(ms)); }

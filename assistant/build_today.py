@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import json
 import os
@@ -327,6 +328,7 @@ def recurring_tasks(now: datetime, cfg: dict) -> list[Task]:
 # ---------- rendering：Tabler（UI 套件）+ FullCalendar（课程表），外壳在 template.html ----------
 
 TEMPLATE = HERE / "template.html"
+CAT = HERE / "cat.jpg"   # "魔法猫猫小提示"表情包，生成时直接嵌进页面
 # Tabler 自带的颜色名；每门课固定分到一个，页面标签和日历用同一个颜色
 COLORS = ["blue", "pink", "teal", "orange", "purple", "green", "indigo", "red", "cyan", "yellow", "lime", "azure"]
 HEX = {"blue": "#066fd1", "pink": "#d6336c", "teal": "#0ca678", "orange": "#f76707", "purple": "#ae3ec9",
@@ -338,6 +340,29 @@ URGENCY_BADGE = {"u-over": "bg-red-lt", "u-24": "bg-red-lt", "u-72": "bg-orange-
 
 def esc(s) -> str:
     return html.escape(str(s), quote=True)
+
+
+def meme_card(now: datetime) -> tuple[str, dict]:
+    """魔法猫猫小提示：今年（加州时间 1 月 1 日零点起）已经过了几个整星期。"""
+    if not CAT.exists():
+        return "", {}
+    start = datetime(now.year, 1, 1, tzinfo=TZ)
+    nxt = datetime(now.year + 1, 1, 1, tzinfo=TZ)
+    weeks = int((now - start).total_seconds() // (7 * 86400))
+    pct = (now - start) / (nxt - start) * 100
+    img = "data:image/jpeg;base64," + base64.b64encode(CAT.read_bytes()).decode()
+    card = (f'<div class="col-12"><div class="card"><div class="card-body">'
+            f'<div class="meme mx-auto" style="--cat:url({img})" role="img" id="meme" '
+            f'aria-label="小提示：你已经在{now.year}浪费了{weeks}个星期了">'
+            f'<div class="meme-cap" aria-hidden="true"><div>小提示：你已经在<span class="meme-year">{now.year}</span></div>'
+            f'<div>浪费了<span class="meme-num">{weeks}</span>个星期了</div></div></div>'
+            f'<div class="meme-foot mx-auto mt-3"><div class="d-flex justify-content-between text-secondary small mb-1">'
+            f'<span>今年已过 <b class="meme-elapsed text-body">{weeks} 周</b></span>'
+            f'<span>全年进度 <b class="meme-pct text-body">{pct:.1f}%</b></span></div>'
+            f'<div class="progress progress-sm"><div class="progress-bar meme-bar" style="width:{pct:.2f}%"></div></div></div>'
+            f'</div></div></div>')
+    data = {"year": now.year, "start": int(start.timestamp() * 1000), "next": int(nxt.timestamp() * 1000)}
+    return card, data
 
 
 def course_colors(names) -> dict[str, str]:
@@ -512,6 +537,8 @@ def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], ta
     p.append(stat_card("alert-triangle", "red" if overdue else "green", len(overdue), "逾期未交", "#todo"))
     p.append(next_card("next-class", "下一节课", "clock"))
     p.append(next_card("next-due", "最近的截止", "flag"))
+    meme_html, meme_data = meme_card(now)
+    p.append(meme_html)
 
     # 今天的课 + 明天预告
     rows = "".join(class_html(c, colors) for c in today_cls) or '<div class="list-group-item text-secondary">今天没有课 🎉</div>'
@@ -595,6 +622,7 @@ def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], ta
         "tasks": [{"id": t.id, "title": t.title, "course": t.course, "due": t.due.isoformat(), "url": t.url,
                    "manual": t.manual, "color": HEX[colors.get(t.course, "secondary")]} for t in pending],
         "calendar": calendar_payload(today, cfg, classes, tasks, colors),
+        "meme": meme_data,
     }
     page = TEMPLATE.read_text(encoding="utf-8")
     return (page.replace("{{BODY}}", "\n".join(p))
