@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo
 
 import agent as brief_agent
 from ai_enrich import enrich, parse_due
-from snapshot import diff, load_prev_state, make_state
+from snapshot import carry_memory, diff, load_prev_state, make_state
 
 HERE = Path(__file__).resolve().parent
 TZ = ZoneInfo("America/Los_Angeles")
@@ -593,7 +593,7 @@ def classify(now: datetime, tasks: list[Task], term: dict) -> tuple[list[Task], 
     return overdue, pending, done
 
 
-def brief_card(brief, tasks: list[Task], colors: dict) -> str:
+def brief_card(brief, tasks: list[Task], colors: dict, memory: dict | None = None) -> str:
     """智能体写的今日简报。所有引用的作业 id 都已经过校验。"""
     by_id = {t.id: t for t in tasks}
     pri = "".join(
@@ -605,20 +605,27 @@ def brief_card(brief, tasks: list[Task], colors: dict) -> str:
         f'<div class="brief-step mt-2"><i class="ti ti-arrow-right"></i><span>{esc(p.first_step)}</span></div>'
         f'</div></div></div>'
         for i, p in enumerate(brief.priorities, 1))
-    plan = "".join(
-        f'<div class="list-group-item"><div class="row g-3 align-items-center">'
-        f'<div class="col-auto"><span class="badge bg-blue-lt brief-time">{esc(b.start)}–{esc(b.end)}</span></div>'
-        f'<div class="col min-w-0">{esc(b.activity)}</div></div></div>' for b in brief.plan)
     risks = "".join(f'<div class="alert alert-warning mb-2"><i class="ti ti-alert-triangle me-1"></i>{esc(r)}</div>'
                     for r in brief.risks)
+    memory = memory or {}
+    lessons = "".join(f'<div class="list-group-item"><div class="brief-step"><i class="ti ti-bulb"></i><span>{esc(x)}</span></div></div>'
+                      for x in memory.get("lessons", []))
+    last = (memory.get("feedback") or [None])[-1]
+    follow = ""
+    if last and last.get("items"):
+        d = date.fromisoformat(last["brief_date"])
+        follow = (f'<div class="list-group-item text-secondary small"><i class="ti ti-checklist me-1"></i>'
+                  f'{d.month}/{d.day} 建议先做的 {len(last["items"])} 件：已交 {last["done"]} · 错过 {last["missed"]} · '
+                  f'还没到期 {last["open"]}' + (f' · 看不到完成情况 {last["unverifiable"]}' if last["unverifiable"] else "")
+                  + '</div>')
     groups = ""
     if pri:
-        groups += f'<div class="list-group-header">先做这几件</div>{pri}'
-    if plan:
-        groups += f'<div class="list-group-header">今天的时间安排</div>{plan}'
+        groups += f'<div class="brief-section"><i class="ti ti-target"></i>今天先做</div>{pri}'
+    if lessons or follow:
+        groups += f'<div class="brief-section"><i class="ti ti-bulb"></i>它学到的经验</div>{follow}{lessons}'
     return (f'<div class="col-12"><section id="brief" class="card"><div class="card-header">'
             f'<h3 class="card-title"><i class="ti ti-compass me-1"></i>今日简报</h3>'
-            f'<div class="card-actions"><span class="badge bg-purple-lt">AI Agent 智能体生成 · 仅供参考</span></div></div>'
+            f'<div class="card-actions"><span class="badge bg-purple-lt">AI Agent 自改进智能体生成 · 仅供参考</span></div></div>'
             f'<div class="card-body"><p class="brief-headline">{esc(brief.headline)}</p></div>'
             + (f'<div class="list-group list-group-flush">{groups}</div>' if groups else "")
             + (f'<div class="card-body">{risks}</div>' if risks else "")
@@ -706,11 +713,11 @@ def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], ta
     p.append(stat_card("alert-triangle", "red" if overdue else "green", len(overdue), "逾期未交", "#todo"))
     p.append(next_card("next-class", "下一节课", "clock"))
     p.append(next_card("next-due", "最近的截止", "flag"))
-    if brief:
-        p.append(brief_card(brief, tasks, colors))
-    p.append(changes_card(changes or {}, colors))
-    meme_html, meme_data = meme_card(now)
+    meme_html, meme_data = meme_card(now)       # 猫猫图放在首屏，紧跟"下一节课 / 最近截止"
     p.append(meme_html)
+    if brief:
+        p.append(brief_card(brief, tasks, colors, state or {}))
+    p.append(changes_card(changes or {}, colors))
 
     # 今天的课 + 明天预告
     rows = "".join(class_html(c, colors) for c in today_cls) or '<div class="list-group-item text-secondary">今天没有课 🎉</div>'
@@ -865,8 +872,18 @@ def main(argv: list[str] | None = None):
     changes = diff(prev_state, state)
     kinds = [k for k in changes if k != "since"]
     print(f"  · 快照对比：{'没有上一份（第一次运行或解密失败）' if not prev_state else f'{len(kinds)} 类变化：' + '、'.join(kinds) if kinds else '和上一份一样'}")
-    brief, brief_info = brief_agent.run_brief(agent_deps(now, cfg, tasks, classes, announcements, changes))
+    # 自改进：先由代码核对上次建议的执行情况，连同已有经验交给智能体；跑完把新的记忆存进这次的快照
+    today_s = now.date().isoformat()
+    memory = carry_memory(prev_state, state, today_s)
+    deps = agent_deps(now, cfg, tasks, classes, announcements, changes)
+    deps.feedback = {"lessons": memory["lessons"], "evaluations": memory["feedback"]}
+    brief, brief_info = brief_agent.run_brief(deps)
+    state.update(carry_memory(prev_state, state, today_s, brief))
+    last = state["feedback"][-1] if state["feedback"] else None
     print(f"  · 今日简报：{brief_info}")
+    print(f"  · 自改进：经验 {len(state['lessons'])} 条" + (
+        f"，核对 {last['brief_date']} 的建议：交了 {last['done']} · 错过 {last['missed']} · 未到期 {last['open']}"
+        if last else "，还没有可以核对的历史"))
     archive = []
     if args.archive_dates and Path(args.archive_dates).exists():
         archive = [d for d in json.loads(Path(args.archive_dates).read_text()).get("dates", []) if d != now.date().isoformat()]

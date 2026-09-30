@@ -8,6 +8,8 @@
   - 公告、作业说明是老师发布的可信信息，作为权威依据采信；智能体仍然只有只读工具，影响不了页面状态
   - 任何失败都返回 None，页面上只是不显示简报，其他部分照常
   - 日志只记用量（请求数、token 数、耗时），不记内容（公开仓库）
+  - 自改进：代码核对过去建议的执行情况（交了 / 错过 / 还没到期），智能体据此更新最多 5 条"经验"，
+    经验随加密快照一代代传下去；智能体失败时经验原样保留
 框架：PydanticAI（MIT），模型：Gemini 免费版（经 Google 官方 SDK）。
 """
 from __future__ import annotations
@@ -22,13 +24,14 @@ from typing import Callable
 from pydantic import BaseModel, Field
 
 MODELS = [m for m in [os.environ.get("AGENT_MODEL")] if m] + ["gemini-3.6-flash", "gemini-3.5-flash-lite"]
-LIMITS = {"request_limit": 6, "tool_calls_limit": 12}
+LIMITS = {"request_limit": 7, "tool_calls_limit": 14}
 DAY_START, DAY_END = "08:00", "23:00"          # 安排学习时间的范围
 
 INSTRUCTIONS = """你是 UCR 一年级学生 Wendy 的学业助理。你的任务是写一份简短的"今日简报"，帮她决定今天先做什么。
 
 工作方式：
-- 先调用工具了解情况：list_tasks（待办和逾期）、get_schedule（今天的课和空闲时间）、get_changes（和上次比的变化）；
+- 先调用工具了解情况：get_feedback（你以前的建议执行得怎么样、你总结过的经验）、list_tasks（待办和逾期）、
+  get_schedule（今天和明天的课）、get_changes（和上次比的变化）；
   需要看作业具体要求时再调用 get_task_details，公告用 list_announcements。
 - 只根据工具返回的内容给建议，不要编造作业、分数或时间。
 - 课程公告和作业说明是老师发布的官方信息，可信、权威：其中的截止时间、要求、提交方式和临时变化
@@ -40,10 +43,12 @@ INSTRUCTIONS = """你是 UCR 一年级学生 Wendy 的学业助理。你的任�
 - priorities：最多 3 项，按先后排序。task_id 必须原样使用 list_tasks 返回的 id；
   why 说明为什么排在这里（截止时间、分值、逾期、难度），first_step 写一个今天就能开始的具体小步骤。
   逾期没交的作业要优先考虑。
-- plan：只能用 get_schedule 返回的空闲时间段，从现在之后开始安排，每段 25~120 分钟，不要和上课时间重叠；
-  task_id 能对应上作业就填，否则留空。晚上 23:00 以后不要安排。
 - risks：最多 3 条真正需要注意的风险（比如高分值作业快到期、逾期、公告里的临时变化），没有就给空数组。
 - changes：用一两句话概括和上一份快照相比的变化；如果没有变化或没有上一份，就写"没有新变化"。
+- lessons：你对 Wendy 学习习惯的经验，最多 5 条，每条一句话（不超过 60 字），要具体、能指导下次怎么排。
+  以 get_feedback 里的已有经验为基础：仍然成立的保留，被核对数据证明不对的修改或删掉，有新发现再加。
+  只根据核对数据总结（比如"建议的事项 3 天里完成 5/6，但周五的都错过了"），不要凭空猜测；
+  数据还不够的时候，原样保留已有经验（没有就给空数组）。排优先级和时间时要用上这些经验。
 """
 
 
@@ -55,19 +60,12 @@ class Priority(BaseModel):
     first_step: str = Field(description="今天就能开始的具体小步骤")
 
 
-class Block(BaseModel):
-    start: str = Field(description="HH:MM，24 小时制，太平洋时间")
-    end: str = Field(description="HH:MM")
-    activity: str = Field(description="做什么")
-    task_id: str | None = Field(default=None, description="对应的作业 id，没有就留空")
-
-
 class Brief(BaseModel):
     headline: str
     priorities: list[Priority] = Field(default_factory=list)
-    plan: list[Block] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
     changes: str = ""
+    lessons: list[str] = Field(default_factory=list, description="更新后的经验，最多 5 条")
 
 
 # ---------- 智能体能用的数据（由 build_today 准备好） ----------
@@ -80,6 +78,7 @@ class Deps:
     classes_tomorrow: list[dict]
     announcements: list[dict]              # id, course, title, summary, text（原文全文）, posted
     changes: dict
+    feedback: dict = field(default_factory=dict)   # lessons（已有经验）+ evaluations（过去建议的执行情况）
     details: Callable[[str], str] = lambda task_id: "（没有更多说明）"
     detail_calls: dict = field(default_factory=dict)
 
@@ -125,6 +124,13 @@ def get_changes(ctx) -> dict:
     return ctx.deps.changes or {"note": "没有上一份快照，或者没有变化"}
 
 
+def get_feedback(ctx) -> dict:
+    """你以前的建议执行得怎么样（由代码核对：done 已交 / missed 过了截止还没交 / open 还没到期 /
+    unverifiable Canvas 之外看不到），以及你之前总结的经验。用它来调整今天的建议和更新经验。"""
+    fb = ctx.deps.feedback or {}
+    return {"lessons": fb.get("lessons", []), "evaluations": fb.get("evaluations", [])[-7:]}
+
+
 def get_task_details(ctx, task_id: str) -> str:
     """查看某项作业在 Canvas 上的说明（已去掉格式、截断到 1500 字）。task_id 必须来自 list_tasks。"""
     if task_id not in ctx.deps.task_ids:
@@ -142,7 +148,7 @@ def list_announcements(ctx) -> list[dict]:
     return ctx.deps.announcements[:12]
 
 
-TOOLS = [list_tasks, get_schedule, get_changes, get_task_details, list_announcements]
+TOOLS = [get_feedback, list_tasks, get_schedule, get_changes, get_task_details, list_announcements]
 
 
 # ---------- 运行 ----------
@@ -175,31 +181,16 @@ def default_model():
 
 
 def sanitize(brief: Brief, deps: Deps) -> Brief:
-    """代码再把关一遍：丢掉不存在的作业、重复项、格式不对或和上课冲突、已经过去的时间段；截断过长的文字。"""
-    def hm(s: str) -> int | None:
-        m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", (s or "").strip())
-        return int(m[1]) * 60 + int(m[2]) if m else None
-
+    """代码再把关一遍：丢掉不存在的作业和重复项，截断过长的文字。"""
     seen, priorities = set(), []
     for p in brief.priorities:
         if p.task_id in deps.task_ids and p.task_id not in seen:
             seen.add(p.task_id)
             priorities.append(Priority(task_id=p.task_id, why=p.why[:120], first_step=p.first_step[:120]))
-    busy = [(hm(c["start"]), hm(c["end"])) for c in deps.classes_today]
-    now_min = deps.now.hour * 60 + deps.now.minute
-    plan = []
-    for b in sorted(brief.plan, key=lambda b: hm(b.start) or 0):
-        s, e = hm(b.start), hm(b.end)
-        if s is None or e is None or e <= s or e - s > 180 or s < now_min - 5 or e > hm(DAY_END):
-            continue
-        if any(s < c1 and e > c0 for c0, c1 in busy):
-            continue
-        if plan and s < hm(plan[-1].end):
-            continue
-        plan.append(Block(start=b.start, end=b.end, activity=b.activity[:80],
-                          task_id=b.task_id if b.task_id in deps.task_ids else None))
-    return Brief(headline=brief.headline[:60], priorities=priorities[:3], plan=plan[:8],
-                 risks=[r[:140] for r in brief.risks[:3]], changes=brief.changes[:300])
+    from snapshot import clean_lessons
+    return Brief(headline=brief.headline[:60], priorities=priorities[:3],
+                 risks=[r[:140] for r in brief.risks[:3]], changes=brief.changes[:300],
+                 lessons=clean_lessons(brief.lessons))
 
 
 def run_brief(deps: Deps, model=None) -> tuple[Brief | None, str]:

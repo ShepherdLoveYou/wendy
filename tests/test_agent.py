@@ -36,14 +36,13 @@ def brief_json(**over):
     base = {"headline": "今晚先把论文初稿写完",
             "priorities": [{"task_id": "canvas-assignment-3", "why": "已经逾期", "first_step": "先交能交的部分"},
                            {"task_id": "canvas-assignment-1", "why": "明晚截止，100 分", "first_step": "列提纲"}],
-            "plan": [{"start": "13:00", "end": "14:30", "activity": "写论文提纲", "task_id": "canvas-assignment-1"}],
             "risks": ["论文明晚截止"], "changes": "没有新变化"}
     base.update(over)
     return base
 
 
 def test_tools_are_a_fixed_read_only_allowlist():
-    assert {t.__name__ for t in ag.TOOLS} == {"list_tasks", "get_schedule", "get_changes",
+    assert {t.__name__ for t in ag.TOOLS} == {"get_feedback", "list_tasks", "get_schedule", "get_changes",
                                                "get_task_details", "list_announcements"}
 
 
@@ -60,7 +59,7 @@ def test_agent_happy_path_uses_tools_and_renders_brief(build):
                             ("output", brief_json()))
     page = build(NOW, CANVAS, model=model)
     assert 'id="brief"' in page.html and "今晚先把论文初稿写完" in page.html
-    assert "写论文提纲" in page.html and "AI Agent 智能体生成" in page.html
+    assert "列提纲" in page.html and "自改进智能体生成" in page.html and "今天先做" in page.html
     assert calls["n"] == 4
 
 
@@ -71,17 +70,10 @@ def test_unknown_task_id_triggers_one_retry_then_is_accepted(build):
     assert calls["n"] == 3 and "made-up-id" not in page.html and 'id="brief"' in page.html
 
 
-def test_plan_blocks_conflicting_or_in_the_past_are_dropped(build):
-    plan = [{"start": "09:00", "end": "10:00", "activity": "早上的（已经过去）"},
-            {"start": "13:00", "end": "14:00", "activity": "可以"},
-            {"start": "13:30", "end": "14:30", "activity": "和上一段重叠"},
-            {"start": "25:00", "end": "26:00", "activity": "时间格式不对"},
-            {"start": "22:30", "end": "23:59", "activity": "超过 23:00"}]
-    model, _ = scripted(("output", brief_json(plan=plan)))
+def test_brief_has_no_time_plan_section(build):
+    model, _ = scripted(("output", brief_json()))
     page = build(NOW, CANVAS, model=model)
-    assert "可以" in page.html
-    for bad in ["早上的", "和上一段重叠", "时间格式不对", "超过 23:00"]:
-        assert bad not in page.html
+    assert 'id="brief"' in page.html and "时间安排" not in page.html
 
 
 def test_calling_a_tool_that_does_not_exist_is_contained(build):

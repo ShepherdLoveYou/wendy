@@ -58,6 +58,64 @@ def diff(prev: dict | None, cur: dict) -> dict:
     return {k: v for k, v in out.items() if v}
 
 
+# ---------- 自改进：核对上次的建议有没有被执行，把经验一代代传下去 ----------
+
+MAX_LESSONS, LESSON_LEN, KEEP_BRIEF_DAYS, KEEP_FEEDBACK = 5, 80, 7, 14
+
+
+def evaluate(prev: dict | None, cur: dict, today: str) -> dict | None:
+    """核对"今天之前最近一份简报"建议先做的事，现在怎么样了。结果由代码判断，不靠 AI。
+    done=已交  missed=过了截止还没交  open=还没到截止  unverifiable=Canvas 之外的任务，看不到完成情况"""
+    briefs = (prev or {}).get("briefs", {})
+    past = sorted(d for d in briefs if d < today)
+    if not past:
+        return None
+    day = past[-1]
+    items = []
+    for tid in briefs[day].get("priorities", []):
+        t = cur["tasks"].get(tid) or (prev or {}).get("tasks", {}).get(tid)
+        if not t:
+            outcome = "unverifiable"
+        elif t["source"] != "Canvas":
+            outcome = "unverifiable"
+        elif cur["tasks"].get(tid, {}).get("done"):
+            outcome = "done"
+        elif t["due"] < cur["generated"]:
+            outcome = "missed"
+        else:
+            outcome = "open"
+        items.append({"task_id": tid, "title": (t or {}).get("title", tid), "due": (t or {}).get("due", ""),
+                      "outcome": outcome})
+    count = {k: sum(i["outcome"] == k for i in items) for k in ("done", "missed", "open", "unverifiable")}
+    return {"brief_date": day, "checked_at": cur["generated"], "items": items, **count}
+
+
+def clean_lessons(lessons) -> list[str]:
+    """经验条目的护栏：只要字符串、去空、去重、每条不超过 80 字、最多 5 条。"""
+    out = []
+    for x in lessons or []:
+        x = " ".join(str(x).split())[:LESSON_LEN] if isinstance(x, str) else ""
+        if x and x not in out:
+            out.append(x)
+    return out[:MAX_LESSONS]
+
+
+def carry_memory(prev: dict | None, cur: dict, today: str, brief=None) -> dict:
+    """算出这一次要存进快照的记忆：最近 7 天的简报、最近 14 次核对、当前的经验。
+    智能体这次失败（brief=None）时，经验和历史原样保留，不会丢。"""
+    prev = prev or {}
+    briefs = {d: b for d, b in prev.get("briefs", {}).items()
+              if d >= (date.fromisoformat(today) - timedelta(days=KEEP_BRIEF_DAYS)).isoformat()}
+    if brief is not None:
+        briefs[today] = {"priorities": [p.task_id for p in brief.priorities], "generated": cur["generated"]}
+    feedback = [f for f in prev.get("feedback", []) if isinstance(f, dict)]
+    ev = evaluate(prev, cur, today)
+    if ev:
+        feedback = [f for f in feedback if f.get("brief_date") != ev["brief_date"]] + [ev]
+    lessons = clean_lessons(brief.lessons) if brief is not None and brief.lessons else clean_lessons(prev.get("lessons"))
+    return {"briefs": briefs, "feedback": feedback[-KEEP_FEEDBACK:], "lessons": lessons}
+
+
 def load_prev_state(path: str | None) -> dict | None:
     """从上一份（已解密的）页面里取出嵌在数据里的状态；拿不到就返回 None（第一次运行、解密失败等）。"""
     if not path or not Path(path).exists():
