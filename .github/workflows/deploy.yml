@@ -35,14 +35,25 @@ jobs:
         with:
           node-version: 22
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: assistant/requirements.txt
+
+      - name: Install Python deps
+        run: pip install -r assistant/requirements.txt
+
       # 课表和明文页面只存在于这台临时机器上，不会提交到公开仓库
       - name: Build today page from Canvas
         env:
           CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
           SCHEDULE_TOML: ${{ secrets.SCHEDULE_TOML }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}   # 可选：翻译成中文、从公告里理解截止日期
         run: |
           if [ -n "$SCHEDULE_TOML" ]; then printf '%s\n' "$SCHEDULE_TOML" > assistant/schedule.toml; fi
-          python3 assistant/build_today.py --out _build/today/index.html
+          python assistant/build_today.py --out _build/today/index.html
 
       - name: Encrypt and assemble site
         env:
@@ -74,3 +85,12 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  # 公开仓库 60 天没有提交，GitHub 会停用定时任务；这里在每次定时运行时通过 API 提前续期（不产生提交）
+  workflow-keepalive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - uses: liskin/gh-workflow-keepalive@v1

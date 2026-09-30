@@ -4,9 +4,7 @@
 # 上课时间和教室不用填：脚本会根据 Canvas 上的班号，自动去 UCR 选课系统读取。
 
 [term]
-name = "Fall 2026"
-week1_monday = "2026-09-28"      # Week 1 的周一，用来算"第几周"
-last_class_day = "2026-12-04"
+# 可选：name / week1_monday / last_class_day 不写就从选课系统自动推算
 holidays = ["2026-11-11", "2026-11-26", "2026-11-27"]
 
 # Canvas 课程 id → 页面上显示的名字（可选，和选课系统的"科目 课号"保持一致）

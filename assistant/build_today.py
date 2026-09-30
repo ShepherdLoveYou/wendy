@@ -28,6 +28,8 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from ai_enrich import enrich, parse_due
+
 HERE = Path(__file__).resolve().parent
 TZ = ZoneInfo("America/Los_Angeles")
 CANVAS = "https://elearn.ucr.edu"
@@ -49,6 +51,7 @@ class Task:
     points: float | None = None
     done: bool = False
     note: str = ""
+    zh: str = ""           # Gemini 翻译的中文标题（没有就显示原文）
 
     @property
     def manual(self) -> bool:  # Canvas 之外的任务，完成状态由 Wendy 在页面上自己勾
@@ -133,7 +136,7 @@ def nearest_date(month: int, day: int, now: datetime) -> date | None:
     return None
 
 
-def deadline_mentions(text: str, now: datetime) -> list[tuple[datetime, str]]:
+def deadline_mentions(text: str, now: datetime) -> list[dict]:
     """找出"含截止类字眼 + 日期"的句子，返回 (截止时间, 原句)。没写时间的按 23:59 算。"""
     found = []
     for sentence in re.split(r"(?<=[.!?])\s+|\n", text):
@@ -150,7 +153,7 @@ def deadline_mentions(text: str, now: datetime) -> list[tuple[datetime, str]]:
                 at = time(hour, int(t[2] or 0))
             else:
                 at = time(23, 59)
-            found.append((datetime.combine(d, at, TZ), sentence.strip()[:200]))
+            found.append({"due": datetime.combine(d, at, TZ), "what": "", "quote": sentence.strip()[:200]})
     return found
 
 
@@ -169,7 +172,7 @@ def canvas_announcements(now: datetime, names: dict[int, str], courses: list[dic
         out.append({"id": a["id"], "title": a.get("title", ""), "url": a.get("html_url", ""),
                     "course": names.get(cid) or course_label(code.get(cid, "")),
                     "when": parse_iso(a.get("posted_at")), "unread": a.get("read_state") == "unread",
-                    "preview": text[:220] + ("…" if len(text) > 220 else ""),
+                    "preview": text[:220] + ("…" if len(text) > 220 else ""), "text": text,
                     "mentions": deadline_mentions(text, now)})
     return sorted(out, key=lambda a: a["when"], reverse=True)
 
@@ -179,14 +182,36 @@ def announcement_tasks(anns: list[dict], canvas: list[Task], now: datetime) -> l
     taken = {(t.course, t.due.date()) for t in canvas}
     out, seen = [], set()
     for a in anns:
-        for due, sentence in a["mentions"]:
+        for m in a["mentions"]:
+            due = m["due"]
             key = (a["course"], due.date())
             if not now <= due <= now + timedelta(days=30) or key in taken or key in seen:
                 continue
             seen.add(key)
-            out.append(Task(id=f"ann-{a['id']}-{due:%m%d}", title=f"公告提到：{a['title']}", course=a["course"],
-                            due=due, url=a["url"], source="公告", note=f"“{sentence}” —— 日期是从公告里自动读的，请点开核对"))
+            how = "AI 从公告里读出来的" if m["what"] else "日期是从公告里自动读的"
+            out.append(Task(id=f"ann-{a['id']}-{due:%m%d}", title=m["what"] or f"公告提到：{a['title']}",
+                            course=a["course"], due=due, url=a["url"], source="公告",
+                            note=f"“{m['quote']}” —— {how}，请点开核对"))
     return out
+
+
+def apply_ai(ai: dict, tasks: list[Task], announcements: list[dict]) -> None:
+    """把 Gemini 的结果并进来：中文标题、公告摘要；AI 读出的截止事项替换掉正则识别的结果。"""
+    zh = {str(x.get("id")): x.get("zh", "") for x in ai.get("tasks") or [] if isinstance(x, dict)}
+    for t in tasks:
+        t.zh = (zh.get(t.id) or "").strip()
+    by_id = {str(x.get("id")): x for x in ai.get("announcements") or [] if isinstance(x, dict)}
+    for a in announcements:
+        x = by_id.get(str(a["id"]))
+        if not x:
+            continue
+        a["zh_title"], a["summary"] = x.get("zh_title", ""), x.get("summary", "")
+        mentions = []
+        for d in x.get("deadlines") or []:
+            due = parse_due(str(d.get("due", "")), TZ) if isinstance(d, dict) else None
+            if due:
+                mentions.append({"due": due, "what": str(d.get("what", ""))[:80], "quote": str(d.get("quote", ""))[:200]})
+        a["mentions"] = mentions
 
 
 # ---------- 课表：从 UCR 选课系统（Banner）实时读取 ----------
@@ -256,6 +281,25 @@ def banner_classes(sections: set[tuple[str, str, str, str]]) -> tuple[list[dict]
                 timed.append(entry)
     return timed, online
 
+
+TERM_NAME = {"10": "Winter", "20": "Spring", "30": "Summer", "40": "Fall"}
+
+
+def derive_term(term_cfg: dict, timed: list[dict], sections: set, today: date) -> dict:
+    """学期信息：schedule.toml 里写了就用写的，没写的从选课系统推出来，换学期不用改配置。
+    Week 1 = 开课那天当天或之后的第一个周一（UCR 秋季周四开课，那几天算 Week 0）。"""
+    term = dict(term_cfg)
+    starts = [as_date(c["from"]) for c in timed if c.get("from")]
+    ends = [as_date(c["until"]) for c in timed if c.get("until")]
+    if "week1_monday" not in term:
+        first = min(starts) if starts else today - timedelta(days=today.weekday())
+        term["week1_monday"] = first + timedelta(days=(7 - first.weekday()) % 7)
+    if "last_class_day" not in term:
+        term["last_class_day"] = max(ends) if ends else as_date(term["week1_monday"]) + timedelta(weeks=10)
+    if "name" not in term:
+        code = max((s[3] for s in sections), default="")
+        term["name"] = f"{TERM_NAME.get(code[4:], '')} {code[:4]}".strip()
+    return term
 
 def apply_notes(classes: list[dict], notes: list[dict]) -> list[dict]:
     """schedule.toml 里的 [[notes]]：按 课程 + 类型开头 匹配，补充备注、链接，或推迟开始日期。"""
@@ -431,7 +475,8 @@ def task_html(t: Task, now: datetime, colors: dict) -> str:
         badge = f'<span class="badge {URGENCY_BADGE[u]} cd">{countdown_text(t.due - now)}</span>'
     return (f'<div class="list-group-item task{" done" if t.done else ""}" data-due="{t.due.isoformat()}">'
             f'<div class="row align-items-center g-3"><div class="col-auto">{lead}</div>'
-            f'<div class="col min-w-0"><div class="fw-medium title">{link(t.title, t.url)}</div>'
+            f'<div class="col min-w-0"><div class="fw-medium title">{link(t.zh or t.title, t.url)}</div>'
+            f'{f"<div class=\"text-secondary small original\">{esc(t.title)}</div>" if t.zh and t.zh != t.title else ""}'
             f'<div class="text-secondary small mt-1 d-flex flex-wrap gap-2 align-items-center">{" · ".join(meta)}</div>'
             f'{note}</div><div class="col-auto">{badge}</div></div></div>')
 
@@ -492,7 +537,7 @@ def calendar_payload(today: date, cfg: dict, classes: list[dict], tasks: list[Ta
 
 
 def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], tasks: list[Task],
-           announcements: list[dict], warnings: list[str]) -> str:
+           announcements: list[dict], warnings: list[str], ai_model: str = "") -> str:
     today = now.date()
     holidays = {str(h) for h in cfg["term"].get("holidays", [])}
     colors = course_colors([c["course"] for c in classes + online] + [t.course for t in tasks])
@@ -594,21 +639,24 @@ def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], ta
         dot = "status-dot status-blue status-dot-animated" if a["unread"] else "status-dot status-secondary"
         mentions = "".join(f'<div class="alert alert-warning py-2 px-3 mb-0 mt-2 small"><i class="ti ti-calendar-due"></i> '
                            f'<b>{d.month}/{d.day} {WEEKDAYS_CN[d.weekday()]} {d:%H:%M}</b>　{esc(s)}</div>'
-                           for d, s in a["mentions"])
+                           for m in a["mentions"] for d, s in [(m["due"], m["what"] or m["quote"])])
         unread = ' <span class="badge bg-blue-lt ms-1">未读</span>' if a["unread"] else ""
+        summary = (f'<div class="mt-2">{esc(a["summary"])}</div>'
+                   f'<div class="text-secondary small mt-1 original">原标题：{esc(a["title"])}</div>' if a.get("summary") else "")
         items.append(f'<div class="list-group-item"><div class="row g-3"><div class="col-auto pt-1"><span class="{dot} d-block"></span></div>'
-                     f'<div class="col min-w-0"><div class="fw-medium">{link(a["title"], a["url"])}'
+                     f'<div class="col min-w-0"><div class="fw-medium">{link(a.get("zh_title") or a["title"], a["url"])}'
                      f'{unread}</div>'
                      f'<div class="text-secondary small mt-1 d-flex gap-2 align-items-center">{course_badge(a["course"], colors)}'
                      f'{rel_day(a["when"].date(), today)} {a["when"]:%H:%M}</div>'
-                     f'<div class="text-secondary small mt-2 preview">{esc(a["preview"])}</div>{mentions}</div></div></div>')
+                     f'{summary}<div class="text-secondary small mt-2 preview">{esc(a["preview"])}</div>{mentions}</div></div></div>')
     if items:
         p.append(f'<div class="col-12"><section id="news" class="card"><div class="card-header"><h3 class="card-title">'
                  f'<i class="ti ti-speakerphone"></i> 最近的公告</h3><div class="card-actions text-secondary small">'
                  f'带日期的句子会自动标出来</div></div><div class="list-group list-group-flush">{"".join(items)}</div></section></div>')
     p.append('</div>')
     p.append(f'<footer class="text-center text-secondary small mt-4">数据更新于 {now:%-m/%-d %H:%M}（太平洋时间）· '
-             f'每天自动更新 4 次 · 倒计时实时计算<br>用 <a href="https://tabler.io" target="_blank" rel="noopener">Tabler</a> 和 '
+             f'每天自动更新 4 次 · 倒计时实时计算{" · 中文由 " + esc(ai_model) + " 翻译" if ai_model else ""}<br>'
+             f'用 <a href="https://tabler.io" target="_blank" rel="noopener">Tabler</a> 和 '
              f'<a href="https://fullcalendar.io" target="_blank" rel="noopener">FullCalendar</a> 构建</footer>')
 
     # 给前端的数据："下一节课 / 最近截止"卡片和课程表
@@ -619,7 +667,7 @@ def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], ta
         "classes": [{"course": c["course"], "kind": c.get("kind", ""), "where": c.get("where", ""),
                      "start": c["start_dt"].isoformat(), "end": c["end_dt"].isoformat(),
                      "color": HEX[colors.get(c["course"], "secondary")]} for c in upcoming],
-        "tasks": [{"id": t.id, "title": t.title, "course": t.course, "due": t.due.isoformat(), "url": t.url,
+        "tasks": [{"id": t.id, "title": t.zh or t.title, "course": t.course, "due": t.due.isoformat(), "url": t.url,
                    "manual": t.manual, "color": HEX[colors.get(t.course, "secondary")]} for t in pending],
         "calendar": calendar_payload(today, cfg, classes, tasks, colors),
         "meme": meme_data,
@@ -646,7 +694,7 @@ def main():
         cfg = tomllib.load(f)
     names = {int(k): v for k, v in cfg.get("courses", {}).items()}
 
-    courses, tasks, announcements = [], [], []
+    courses, tasks, announcements, ai_model = [], [], [], ""
     if not os.environ.get("CANVAS_TOKEN"):
         warnings.append("没读到 Canvas：没有设置 CANVAS_TOKEN。下面只有课表和固定作业")
     else:
@@ -654,6 +702,10 @@ def main():
             courses = canvas_get("courses", {"enrollment_state": "active", "include[]": "sections", "per_page": 100})
             tasks = canvas_tasks(now, names)
             announcements = canvas_announcements(now, names, courses)
+            ai = enrich(now, tasks, announcements)
+            if ai:
+                apply_ai(ai, tasks, announcements)
+                ai_model = ai["model"]
             tasks += announcement_tasks(announcements, tasks, now)
         except urllib.error.HTTPError as e:
             reason = "token 失效或过期（401），需要重新生成" if e.code == 401 else f"返回 HTTP {e.code}"
@@ -669,17 +721,19 @@ def main():
             timed, online = banner_classes(sections)
         except Exception as e:  # noqa: BLE001 - 选课系统偶尔维护，不影响其他部分
             warnings.append(f"没读到选课系统的课表（{type(e).__name__}），课表只显示手动填写的部分")
+    cfg["term"] = derive_term(cfg.get("term", {}), timed, sections, now.date())
     notes = cfg.get("notes", [])
     classes = apply_notes(timed, notes) + cfg.get("classes", [])  # [[classes]] 是手动添加的额外日程
     online = apply_notes(online, notes)
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render(now, cfg, classes, online, tasks, announcements, warnings), encoding="utf-8")
+    out.write_text(render(now, cfg, classes, online, tasks, announcements, warnings, ai_model), encoding="utf-8")
     count = lambda src: sum(t.source == src for t in tasks)  # noqa: E731
     print(f"✓ {out}  Canvas {count('Canvas')} 项 · 公告里读到 {count('公告')} 项 · "
           f"固定作业 {len(tasks) - count('Canvas') - count('公告')} 项 · 公告 {len(announcements)} 条 · "
           f"课 {len(timed)} 个时段 + 线上 {len(online)} 门（来自选课系统）"
+          + (f" · 中文和截止日期由 {ai_model} 处理" if ai_model else " · 未用 AI（规则方式）")
           + "".join(f"\n  ⚠️ {w}" for w in warnings))
 
 

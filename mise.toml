@@ -6,6 +6,7 @@
 # 需要的环境变量写在 .env（已被 git 忽略）：
 #   CANVAS_TOKEN=...     Canvas → Account → Settings → New Access Token
 #   SITE_PASSWORD=...    网站口令，只在 mise run encrypt 时用到
+#   GEMINI_API_KEY=...   可选：Google AI Studio 的免费 key，用来翻译和理解公告里的截止日期
 
 [env]
 _.file = { path = ".env", redact = true }
@@ -13,7 +14,7 @@ _.file = { path = ".env", redact = true }
 [tasks.today]
 description = "从 Canvas 生成今日待办页面（明文，只在本地）并用浏览器打开"
 run = [
-  "python3 assistant/build_today.py --out _build/today/index.html",
+  "uv run --quiet --no-project --with-requirements assistant/requirements.txt python assistant/build_today.py --out _build/today/index.html",
   "open _build/today/index.html",
 ]
 
