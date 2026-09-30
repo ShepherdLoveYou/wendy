@@ -2,8 +2,10 @@
 """生成 Wendy 的"今日助理"页面：今天要上的课、要交的作业和截止时间，每项带倒计时。
 
 数据来源：
-  1. Canvas API（环境变量 CANVAS_TOKEN）：作业、测验、讨论的截止时间和提交状态，最近的公告
-  2. assistant/schedule.toml：课表，以及 Canvas 读不到的固定作业（Top Hat、iMath）
+  1. Canvas API（环境变量 CANVAS_TOKEN）：作业、测验、讨论的截止时间和提交状态，最近的公告，
+     以及选了哪些班（课号里带班号，比如 CS_005_002_26F）
+  2. UCR 选课系统 Banner 的公开课程查询：按班号实时读取上课时间、教室和老师，所以课表是自动更新的
+  3. assistant/schedule.toml：给课加备注/链接，以及 Canvas 读不到的固定作业（Top Hat、iMath）
 
 用法：
   python3 assistant/build_today.py --out _build/today/index.html
@@ -151,8 +153,7 @@ def deadline_mentions(text: str, now: datetime) -> list[tuple[datetime, str]]:
     return found
 
 
-def canvas_announcements(now: datetime, names: dict[int, str]) -> list[dict]:
-    courses = canvas_get("courses", {"enrollment_state": "active", "per_page": 100})
+def canvas_announcements(now: datetime, names: dict[int, str], courses: list[dict]) -> list[dict]:
     anns = canvas_get("announcements", {
         "context_codes[]": [f"course_{c['id']}" for c in courses],
         "start_date": (now - timedelta(days=14)).date().isoformat(),
@@ -187,6 +188,90 @@ def announcement_tasks(anns: list[dict], canvas: list[Task], now: datetime) -> l
     return out
 
 
+# ---------- 课表：从 UCR 选课系统（Banner）实时读取 ----------
+
+BANNER = "https://registrationssb.ucr.edu/StudentRegistrationSsb/ssb"
+SECTION_RE = re.compile(r"^([A-Z]+)_(\w+?)_(\d{3})_(\d{2})([WSUF])")   # CS_005_002_26F
+TERM_SUFFIX = {"W": "10", "S": "20", "U": "30", "F": "40"}              # 26F → 202640
+KIND_CN = {"Lecture": "大课", "Discussion": "讨论课", "Laboratory": "Lab", "Workshop": "工作坊",
+           "Seminar": "研讨课", "Studio": "Studio", "Activity": "活动"}
+BANNER_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+
+def enrolled_sections(courses: list[dict]) -> set[tuple[str, str, str, str]]:
+    """从 Canvas 课号和子班名里认出 (科目, 课号, 班号, 学期代码)。PSYC 讨论课 021 这种子班也会被认出来。"""
+    out = set()
+    for c in courses:
+        for name in [c.get("course_code", "")] + [s.get("name", "") for s in c.get("sections") or []]:
+            m = SECTION_RE.match(name or "")
+            if m:
+                out.add((m[1], m[2], m[3], f"20{m[4]}{TERM_SUFFIX[m[5]]}"))
+    return out
+
+
+def person(display_name: str) -> str:
+    """'Wood, William' → 'William Wood'"""
+    last, _, first = display_name.partition(", ")
+    return f"{first} {last}".strip()
+
+
+def banner_classes(sections: set[tuple[str, str, str, str]]) -> tuple[list[dict], list[dict]]:
+    """返回 (有固定上课时间的课, 没有固定时间的线上课)。"""
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
+    call = lambda path, data=None: opener.open(f"{BANNER}/{path}", data=data, timeout=30).read()  # noqa: E731
+    call("term/termSelection?mode=search")
+    timed, online, selected_term = [], [], None
+    for subj, num, term in sorted({(s, n, t) for s, n, _, t in sections}):
+        if term != selected_term:
+            call("term/search?mode=search", f"term={term}".encode())
+            selected_term = term
+        call("classSearch/resetDataForm", b"")
+        query = urllib.parse.urlencode({"txt_subject": subj, "txt_courseNumber": num, "txt_term": term,
+                                        "pageOffset": 0, "pageMaxSize": 500, "sortColumn": "subjectDescription",
+                                        "sortDirection": "asc"})
+        wanted = {seq for s, n, seq, t in sections if (s, n, t) == (subj, num, term)}
+        for sec in json.loads(call(f"searchResults/searchResults?{query}")).get("data") or []:
+            if sec.get("courseNumber") != num or sec.get("sequenceNumber") not in wanted:
+                continue
+            base = KIND_CN.get(sec.get("scheduleTypeDescription", ""), sec.get("scheduleTypeDescription", ""))
+            kind = base if base == "大课" else f"{base} {sec['sequenceNumber']}"
+            teacher = next((person(f["displayName"]) for f in sec.get("faculty", []) if f.get("primaryIndicator")), "")
+            for mf in sec.get("meetingsFaculty", []):
+                m = mf.get("meetingTime") or {}
+                online_only = (m.get("building") or "").upper() == "ONLINE"
+                where = "线上" if online_only else f"{m.get('buildingDescription', '')} {m.get('room', '')}".strip()
+                entry = {"course": f"{subj} {num}", "kind": kind, "where": where,
+                         "note": f"{'TA' if base in ('讨论课', 'Lab') else '老师'} {teacher}" if teacher else ""}
+                days = [WEEKDAYS[i] for i, d in enumerate(BANNER_DAYS) if m.get(d)]
+                if not (days and m.get("beginTime") and m.get("endTime")):
+                    online.append(entry)
+                    continue
+                if "exam" in (m.get("meetingTypeDescription") or "").lower():
+                    entry["kind"] = "考试"
+                entry.update(days=days, start=f"{m['beginTime'][:2]}:{m['beginTime'][2:]}",
+                             end=f"{m['endTime'][:2]}:{m['endTime'][2:]}",
+                             **{"from": datetime.strptime(m["startDate"], "%m/%d/%Y").date(),
+                                "until": datetime.strptime(m["endDate"], "%m/%d/%Y").date()})
+                timed.append(entry)
+    return timed, online
+
+
+def apply_notes(classes: list[dict], notes: list[dict]) -> list[dict]:
+    """schedule.toml 里的 [[notes]]：按 课程 + 类型开头 匹配，补充备注、链接，或推迟开始日期。"""
+    out = []
+    for c in classes:
+        c = dict(c)
+        for n in notes:
+            if n.get("course") == c["course"] and c.get("kind", "").startswith(n.get("kind", "")):
+                if n.get("note"):
+                    c["note"] = " · ".join(x for x in (c.get("note"), n["note"]) if x)
+                for key in ("link", "from", "until", "where"):
+                    if key in n:
+                        c[key] = n[key]
+        out.append(c)
+    return out
+
+
 # ---------- schedule.toml ----------
 
 def as_date(v) -> date:
@@ -207,11 +292,11 @@ def week_number(day: date, term: dict) -> int:
     return 0 if day < w1 else (day - w1).days // 7 + 1
 
 
-def classes_on(day: date, cfg: dict) -> list[dict]:
-    if day.isoformat() in {str(h) for h in cfg["term"].get("holidays", [])}:
+def classes_on(day: date, classes: list[dict], holidays: set[str]) -> list[dict]:
+    if day.isoformat() in holidays:
         return []
     out = []
-    for c in cfg.get("classes", []):
+    for c in classes:
         if WEEKDAYS[day.weekday()] not in c.get("days", []):
             continue
         if "from" in c and day < as_date(c["from"]) or "until" in c and day > as_date(c["until"]):
@@ -239,64 +324,157 @@ def recurring_tasks(now: datetime, cfg: dict) -> list[Task]:
     return out
 
 
-# ---------- rendering ----------
+# ---------- rendering：Tabler（UI 套件）+ FullCalendar（课程表），外壳在 template.html ----------
+
+TEMPLATE = HERE / "template.html"
+# Tabler 自带的颜色名；每门课固定分到一个，页面标签和日历用同一个颜色
+COLORS = ["blue", "pink", "teal", "orange", "purple", "green", "indigo", "red", "cyan", "yellow", "lime", "azure"]
+HEX = {"blue": "#066fd1", "pink": "#d6336c", "teal": "#0ca678", "orange": "#f76707", "purple": "#ae3ec9",
+       "green": "#2fb344", "indigo": "#4263eb", "red": "#d63939", "cyan": "#17a2b8", "yellow": "#f59f00",
+       "lime": "#74b816", "azure": "#4299e1", "secondary": "#667382"}
+URGENCY_BADGE = {"u-over": "bg-red-lt", "u-24": "bg-red-lt", "u-72": "bg-orange-lt", "u-week": "bg-blue-lt",
+                 "u-later": "bg-secondary-lt"}
+
 
 def esc(s) -> str:
     return html.escape(str(s), quote=True)
 
 
-def fmt_due(dt: datetime) -> str:
-    return f"{dt.month}/{dt.day} {WEEKDAYS_CN[dt.weekday()]} {dt:%H:%M}"
+def course_colors(names) -> dict[str, str]:
+    return {n: COLORS[i % len(COLORS)] for i, n in enumerate(sorted(set(names)))}
+
+
+def rel_day(day: date, today: date) -> str:
+    return {-1: "昨天", 0: "今天", 1: "明天", 2: "后天"}.get((day - today).days, WEEKDAYS_CN[day.weekday()])
 
 
 def day_heading(day: date, today: date) -> str:
-    rel = {0: "今天", 1: "明天", 2: "后天"}.get((day - today).days, "")
-    label = f"{day.month}月{day.day}日 {WEEKDAYS_CN[day.weekday()]}"
+    label = f"{day.month}/{day.day} {WEEKDAYS_CN[day.weekday()]}"
+    rel = {0: "今天", 1: "明天", 2: "后天"}.get((day - today).days)
     return f"{rel} · {label}" if rel else label
 
 
 def countdown_text(delta: timedelta) -> str:
-    """服务器端的初始文字；打开页面后由 JS 实时刷新。"""
+    """服务器端的初始文字；打开页面后由 JS 每秒刷新。"""
     s = int(delta.total_seconds())
     if s < 0:
-        return "已过截止"
+        return "已截止"
     d, h, m = s // 86400, s % 86400 // 3600, s % 3600 // 60
-    return f"还剩 {d}天{h}小时" if d else f"还剩 {h}小时{m}分" if h else f"还剩 {m}分"
+    return f"{d}天{h}小时" if d else f"{h}小时{m}分" if h else f"{m}分"
 
 
-def task_html(t: Task, now: datetime) -> str:
-    meta = [f'<span class="course">{esc(t.course)}</span>', esc(t.kind if not t.manual else t.source)]
+def urgency(delta: timedelta) -> str:
+    s = delta.total_seconds()
+    return "u-over" if s < 0 else "u-24" if s < 86400 else "u-72" if s < 3 * 86400 else "u-week" if s < 7 * 86400 else "u-later"
+
+
+def course_badge(course: str, colors: dict) -> str:
+    return f'<span class="badge bg-{colors.get(course, "secondary")}-lt">{esc(course)}</span>'
+
+
+def link(text: str, url: str, cls: str = "text-reset") -> str:
+    return f'<a class="{cls}" href="{esc(url)}" target="_blank" rel="noopener">{esc(text)}</a>' if url else esc(text)
+
+
+def where_html(c: dict) -> str:
+    where, url = c.get("where", ""), c.get("link", "")
+    if where.startswith("http"):
+        where, url = "", where
+    parts = [f'<i class="ti ti-map-pin"></i> {esc(where)}'] if where else []
+    if url:
+        parts.append(f'<a href="{esc(url)}" target="_blank" rel="noopener"><i class="ti ti-video"></i> '
+                     f'{"Zoom" if "zoom" in url else "链接"}</a>')
+    return " · ".join(parts)
+
+
+def task_html(t: Task, now: datetime, colors: dict) -> str:
+    color = colors.get(t.course, "secondary")
+    meta = [course_badge(t.course, colors), esc(t.source if t.manual else t.kind)]
     if t.points:
         meta.append(f"{t.points:g} 分")
-    meta.append(f"截止 {fmt_due(t.due)}")
-    title = f'<a href="{esc(t.url)}" target="_blank" rel="noopener">{esc(t.title)}</a>' if t.url else esc(t.title)
-    note = f'<div class="note">{esc(t.note)}</div>' if t.note else ""
-    check = (f'<label class="check"><input type="checkbox" data-key="{esc(t.id)}"> 我做完了</label>'
-             if t.manual else "")
-    badge = '<span class="tag done-tag">已交</span>' if t.done else ""
-    return (f'<li class="task{" done" if t.done else ""}" data-due="{t.due.isoformat()}">'
-            f'<div class="main"><div class="title">{title}{badge}</div>'
-            f'<div class="meta">{" · ".join(meta)}</div>{note}{check}</div>'
-            f'<div class="cd" data-due="{t.due.isoformat()}">{countdown_text(t.due - now)}</div></li>')
+    meta.append(f"{rel_day(t.due.date(), now.date())} {t.due:%H:%M}")
+    if t.manual:
+        lead = (f'<input class="form-check-input m-0 tick" type="checkbox" data-key="{esc(t.id)}" '
+                f'aria-label="标记为已完成">')
+    else:
+        lead = f'<span class="status-dot status-{color if not t.done else "green"} d-block"></span>'
+    note = f'<div class="text-secondary small mt-1">{esc(t.note)}</div>' if t.note else ""
+    if t.done:
+        badge = '<span class="badge bg-green-lt cd-done"><i class="ti ti-check"></i> 已交</span>'
+    else:
+        u = urgency(t.due - now)
+        badge = f'<span class="badge {URGENCY_BADGE[u]} cd">{countdown_text(t.due - now)}</span>'
+    return (f'<div class="list-group-item task{" done" if t.done else ""}" data-due="{t.due.isoformat()}">'
+            f'<div class="row align-items-center g-3"><div class="col-auto">{lead}</div>'
+            f'<div class="col min-w-0"><div class="fw-medium title">{link(t.title, t.url)}</div>'
+            f'<div class="text-secondary small mt-1 d-flex flex-wrap gap-2 align-items-center">{" · ".join(meta)}</div>'
+            f'{note}</div><div class="col-auto">{badge}</div></div></div>')
 
 
-def class_html(c: dict) -> str:
-    where = c.get("where", "")
-    where_html = (f'<a href="{esc(where)}" target="_blank" rel="noopener">Zoom 链接</a>'
-                  if where.startswith("http") else esc(where))
-    span = f"{c['start_dt']:%H:%M}" + (f"–{c['end_dt']:%H:%M}" if c.get("end") else "")
-    note = f" · {esc(c['note'])}" if c.get("note") else ""
-    warn = (f'<a class="tag unread" href="{esc(c["warn_url"])}" target="_blank" rel="noopener">⚠️ 公告说可能取消</a>'
-            if c.get("warn_url") else "")
-    return (f'<li class="cls" data-start="{c["start_dt"].isoformat()}" data-end="{c["end_dt"].isoformat()}">'
-            f'<div class="time">{span}</div><div class="main"><div class="title">'
-            f'<span class="course">{esc(c["course"])}</span> {esc(c.get("kind", ""))}{warn}</div>'
-            f'<div class="meta">{where_html}{note}</div></div><div class="cd cls-cd"></div></li>')
+def class_html(c: dict, colors: dict) -> str:
+    color = colors.get(c["course"], "secondary")
+    warn = (f' <a class="badge bg-orange-lt" href="{esc(c["warn_url"])}" target="_blank" rel="noopener">'
+            f'<i class="ti ti-alert-triangle"></i> 公告说可能取消</a>' if c.get("warn_url") else "")
+    note = f' · {esc(c["note"])}' if c.get("note") else ""
+    return (f'<div class="list-group-item cls" data-start="{c["start_dt"].isoformat()}" data-end="{c["end_dt"].isoformat()}">'
+            f'<div class="row align-items-center g-3">'
+            f'<div class="col-auto text-center time-col"><div class="fw-bold">{c["start_dt"]:%H:%M}</div>'
+            f'<div class="text-secondary small">{c["end_dt"]:%H:%M}</div></div>'
+            f'<div class="col-auto"><span class="status-dot status-{color} d-block"></span></div>'
+            f'<div class="col min-w-0"><div class="fw-medium">{course_badge(c["course"], colors)} {esc(c.get("kind", ""))}{warn}</div>'
+            f'<div class="text-secondary small mt-1">{where_html(c)}{note}</div></div>'
+            f'<div class="col-auto"><span class="badge bg-secondary-lt cd"></span></div></div></div>')
 
 
-def render(now: datetime, cfg: dict, tasks: list[Task], announcements: list[dict], warnings: list[str]) -> str:
+def stat_card(icon: str, color: str, value: int, label: str, href: str) -> str:
+    return (f'<div class="col-6 col-lg-3"><a class="card card-sm card-link text-reset" href="{href}"><div class="card-body">'
+            f'<div class="row align-items-center"><div class="col-auto"><span class="bg-{color} text-white avatar">'
+            f'<i class="ti ti-{icon} fs-2"></i></span></div><div class="col"><div class="h1 mb-0 lh-1">{value}</div>'
+            f'<div class="text-secondary small">{label}</div></div></div></div></a></div>')
+
+
+def next_card(id_: str, label: str, icon: str) -> str:
+    return (f'<div class="col-md-6"><div class="card next" id="{id_}"><div class="card-status-start"></div>'
+            f'<div class="card-body"><div class="subheader"><i class="ti ti-{icon}"></i> {label}</div>'
+            f'<div class="h1 my-2 next-big">—</div><div class="fw-medium next-title">加载中…</div>'
+            f'<div class="text-secondary small next-meta"></div></div></div></div>')
+
+
+def calendar_payload(today: date, cfg: dict, classes: list[dict], tasks: list[Task], colors: dict) -> dict:
+    """FullCalendar 用的数据：整个学期的课（节假日已排除）+ 截止时间点。"""
+    holidays = {str(h) for h in cfg["term"].get("holidays", [])}
+    start = as_date(cfg["term"]["week1_monday"]) - timedelta(days=7)
+    end = as_date(cfg["term"].get("last_class_day", today + timedelta(days=90))) + timedelta(days=14)
+    events, hours, weekend = [], [], False
+    day = start
+    while day <= end:
+        for c in classes_on(day, classes, holidays):
+            events.append({"title": f"{c['course']} {c.get('kind', '')}", "start": c["start_dt"].isoformat(),
+                           "end": c["end_dt"].isoformat(), "color": HEX[colors.get(c["course"], "secondary")],
+                           "extendedProps": {"where": c.get("where", "")}})
+            hours += [c["start_dt"].hour, c["end_dt"].hour + (1 if c["end_dt"].minute else 0)]
+            weekend |= day.weekday() >= 5
+        day += timedelta(days=1)
+    for t in tasks:
+        if t.done:
+            continue
+        events.append({"title": f"{t.due:%H:%M} {t.course} {t.title}", "start": t.due.date().isoformat(),
+                       "allDay": True, "url": t.url, "classNames": ["deadline"],
+                       "color": HEX[colors.get(t.course, "secondary")]})
+    lo, hi = (min(hours), max(hours)) if hours else (8, 18)
+    return {"events": events, "slotMinTime": f"{max(lo - 1, 0):02d}:00:00", "slotMaxTime": f"{min(hi + 1, 24):02d}:00:00",
+            "hiddenDays": [] if weekend else [0, 6]}
+
+
+def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], tasks: list[Task],
+           announcements: list[dict], warnings: list[str]) -> str:
     today = now.date()
+    holidays = {str(h) for h in cfg["term"].get("holidays", [])}
+    colors = course_colors([c["course"] for c in classes + online] + [t.course for t in tasks])
     week = week_number(today, cfg["term"])
+    first, last = as_date(cfg["term"]["week1_monday"]), as_date(cfg["term"]["last_class_day"])
+    total_weeks = (last - first).days // 7 + 1
+    term_pct = max(0, min(100, round((today - first).days / max((last - first).days, 1) * 100)))
     overdue = sorted((t for t in tasks if not t.done and not t.manual and t.due < now), key=lambda t: t.due)
     pending = sorted((t for t in tasks if not t.done and t.due >= now - timedelta(hours=12) and t not in overdue),
                      key=lambda t: t.due)
@@ -304,161 +482,123 @@ def render(now: datetime, cfg: dict, tasks: list[Task], announcements: list[dict
     horizon = today + timedelta(days=14)
     soon = [t for t in pending if t.due.date() <= horizon]
     later = [t for t in pending if t.due.date() > horizon]
-
-    due_today = sum(1 for t in pending if t.due.date() == today)
-    within3 = sum(1 for t in pending if t.due - now <= timedelta(days=3))
-    chips = [f'<span class="chip red">今天截止 {due_today}</span>',
-             f'<span class="chip orange">3 天内 {within3}</span>']
-    if overdue:
-        chips.insert(0, f'<span class="chip red solid">逾期未交 {len(overdue)}</span>')
-
-    parts = [f'<header><h1>Wendy 的今日待办</h1>'
-             f'<div class="sub">{today.month}月{today.day}日 {WEEKDAYS_CN[today.weekday()]} · '
-             f'{esc(cfg["term"]["name"])} Week {week}</div><div class="chips">{"".join(chips)}</div></header>']
-    parts += [f'<div class="alert">⚠️ {esc(w)}</div>' for w in warnings]
-
-    if overdue:
-        parts.append('<section><h2>🔴 逾期未交</h2><p class="hint">大多数作业晚交还能拿部分分，尽快补交，或者联系老师。</p>'
-                     f'<ul class="list">{"".join(task_html(t, now) for t in overdue)}</ul></section>')
+    today_cls = classes_on(today, classes, holidays)
 
     # 当天发的公告里提到 cancel 的课，在课表上提醒一下
     cancelled = {a["course"]: a["url"] for a in announcements
                  if a["when"] and a["when"].date() == today and re.search(r"cancel", a["title"] + a["preview"], re.I)}
-    for label, day in (("今天的课", today), ("明天的课", today + timedelta(days=1))):
-        cls = classes_on(day, cfg)
-        if day == today:
-            cls = [{**c, "warn_url": cancelled.get(c["course"], "")} for c in cls]
-        body = (f'<ul class="list">{"".join(class_html(c) for c in cls)}</ul>' if cls
-                else '<p class="empty">没有课 🎉</p>')
-        parts.append(f'<section><h2>{label}</h2>{body}</section>')
+    today_cls = [{**c, "warn_url": cancelled.get(c["course"], "")} for c in today_cls]
 
+    p = [f'<div class="page-header"><div class="row g-2 align-items-center"><div class="col">'
+         f'<div class="page-pretitle" id="greet">你好</div><h2 class="page-title">Wendy 的今日</h2>'
+         f'<div class="text-secondary mt-1">{today.month}月{today.day}日 {WEEKDAYS_CN[today.weekday()]} · '
+         f'{esc(cfg["term"]["name"])}</div></div><div class="col-auto">'
+         f'<div class="text-end small text-secondary mb-1">Week {week} / {total_weeks}</div>'
+         f'<div class="progress progress-sm term-progress"><div class="progress-bar" style="width:{term_pct}%"></div></div>'
+         f'</div></div></div>']
+    p += [f'<div class="alert alert-warning mt-3 mb-0" role="alert"><i class="ti ti-alert-triangle"></i> {esc(w)}</div>'
+          for w in warnings]
+
+    p.append('<nav class="nav-sticky"><div class="nav nav-pills">'
+             '<a class="nav-link" href="#today"><i class="ti ti-sun"></i> 今天</a>'
+             '<a class="nav-link" href="#todo"><i class="ti ti-checklist"></i> 待办</a>'
+             '<a class="nav-link" href="#timetable"><i class="ti ti-calendar-week"></i> 课程表</a>'
+             '<a class="nav-link" href="#news"><i class="ti ti-speakerphone"></i> 公告</a></div></nav>')
+
+    p.append('<div class="row row-cards">')
+    p.append(stat_card("school", "blue", len(today_cls), "今天的课", "#today"))
+    p.append(stat_card("alarm", "red", sum(t.due.date() == today for t in pending), "今天截止", "#todo"))
+    p.append(stat_card("hourglass-high", "orange", sum(t.due - now <= timedelta(days=3) for t in pending), "3 天内截止", "#todo"))
+    p.append(stat_card("alert-triangle", "red" if overdue else "green", len(overdue), "逾期未交", "#todo"))
+    p.append(next_card("next-class", "下一节课", "clock"))
+    p.append(next_card("next-due", "最近的截止", "flag"))
+
+    # 今天的课 + 明天预告
+    rows = "".join(class_html(c, colors) for c in today_cls) or '<div class="list-group-item text-secondary">今天没有课 🎉</div>'
+    tmr = classes_on(today + timedelta(days=1), classes, holidays)
+    tmr_html = ("、".join(f'{c["start_dt"]:%H:%M} {esc(c["course"])} {esc(c.get("kind", ""))}' for c in tmr)
+                if tmr else "没有课")
+    p.append(f'<div class="col-12"><section id="today" class="card"><div class="card-header"><h3 class="card-title">'
+             f'<i class="ti ti-sun"></i> 今天的课</h3><div class="card-actions text-secondary small">'
+             f'{WEEKDAYS_CN[today.weekday()]} · {len(today_cls)} 节</div></div>'
+             f'<div class="list-group list-group-flush">{rows}</div>'
+             f'<div class="card-footer text-secondary small"><i class="ti ti-arrow-right"></i> 明天：{tmr_html}</div></section></div>')
+
+    # 待办
+    body = []
+    if overdue:
+        body.append(f'<div class="list-group-header text-danger">逾期未交 · {len(overdue)}</div>')
+        body += [task_html(t, now, colors) for t in overdue]
     groups: dict[date, list[Task]] = {}
     for t in soon:
         groups.setdefault(t.due.date(), []).append(t)
-    parts.append('<section><h2>接下来两周要交的</h2>')
-    if not groups:
-        parts.append('<p class="empty">两周内没有截止的任务。</p>')
     for day, ts in groups.items():
-        parts.append(f'<h3>{day_heading(day, today)}</h3><ul class="list">'
-                     f'{"".join(task_html(t, now) for t in ts)}</ul>')
-    parts.append('<p class="hint">Top Hat、iMath 的完成情况 Canvas 看不到，做完请自己勾选（只保存在这台设备上）。</p></section>')
-
+        body.append(f'<div class="list-group-header{" text-primary" if day == today else ""}">'
+                    f'{day_heading(day, today)} · {len(ts)}</div>')
+        body += [task_html(t, now, colors) for t in ts]
+    if not body:
+        body.append('<div class="list-group-item text-secondary">两周内没有要交的 🎉</div>')
+    extra = ""
     if later:
-        parts.append(f'<details><summary>更远的 {len(later)} 项</summary><ul class="list">'
-                     f'{"".join(task_html(t, now) for t in later)}</ul></details>')
+        extra += (f'<details class="card-footer"><summary class="text-primary fw-medium">更远的 {len(later)} 项</summary>'
+                  f'<div class="list-group list-group-flush mt-2">{"".join(task_html(t, now, colors) for t in later)}</div></details>')
     if done:
-        parts.append(f'<details><summary>最近已交 {len(done)} 项 ✅</summary><ul class="list">'
-                     f'{"".join(task_html(t, now) for t in done)}</ul></details>')
+        extra += (f'<details class="card-footer"><summary class="text-success fw-medium">最近已交 {len(done)} 项</summary>'
+                  f'<div class="list-group list-group-flush mt-2">{"".join(task_html(t, now, colors) for t in done)}</div></details>')
+    p.append(f'<div class="col-12"><section id="todo" class="card"><div class="card-header"><h3 class="card-title">'
+             f'<i class="ti ti-checklist"></i> 接下来两周要交的</h3><div class="card-actions text-secondary small">'
+             f'Top Hat / iMath 做完请自己打勾</div></div><div class="list-group list-group-flush">{"".join(body)}</div>'
+             f'{extra}</section></div>')
 
+    # 课程表（FullCalendar）
+    online_note = ""
+    if online:
+        names = "、".join(sorted({f'{c["course"]} {c["kind"]}' for c in online}))
+        online_note = f'<div class="card-footer text-secondary small"><i class="ti ti-world"></i> 线上课，没有固定上课时间：{esc(names)}</div>'
+    p.append(f'<div class="col-12"><section id="timetable" class="card"><div class="card-header"><h3 class="card-title">'
+             f'<i class="ti ti-calendar-week"></i> 课程表</h3><div class="card-actions text-secondary small">'
+             f'自动读取 UCR 选课系统 · 最上面一行是当天的截止</div></div>'
+             f'<div class="card-body"><div id="calendar"></div></div>{online_note}</section></div>')
+
+    # 公告
     recent = [a for a in announcements if a["when"] and a["when"] >= now - timedelta(days=10)]
-    if recent:
-        items = []
-        for a in recent:
-            unread = '<span class="tag unread">未读</span>' if a["unread"] else ""
-            mentions = "".join(f'<div class="mention">📅 <b>{fmt_due(d)}</b>　{esc(s)}</div>' for d, s in a["mentions"])
-            items.append(f'<li><a href="{esc(a["url"])}" target="_blank" rel="noopener">{esc(a["title"])}</a>{unread}'
-                         f'<div class="meta"><span class="course">{esc(a["course"])}</span> · '
-                         f'{a["when"].month}/{a["when"].day} {a["when"]:%H:%M}</div>'
-                         f'<div class="preview">{esc(a["preview"])}</div>{mentions}</li>')
-        parts.append('<section><h2>📢 最近的公告</h2><p class="hint">公告里带日期的句子会自动标出来，'
-                     f'未来 30 天内的也加进了上面的待办。</p><ul class="ann">{"".join(items)}</ul></section>')
+    items = []
+    for a in recent:
+        dot = "status-dot status-blue status-dot-animated" if a["unread"] else "status-dot status-secondary"
+        mentions = "".join(f'<div class="alert alert-warning py-2 px-3 mb-0 mt-2 small"><i class="ti ti-calendar-due"></i> '
+                           f'<b>{d.month}/{d.day} {WEEKDAYS_CN[d.weekday()]} {d:%H:%M}</b>　{esc(s)}</div>'
+                           for d, s in a["mentions"])
+        unread = ' <span class="badge bg-blue-lt ms-1">未读</span>' if a["unread"] else ""
+        items.append(f'<div class="list-group-item"><div class="row g-3"><div class="col-auto pt-1"><span class="{dot} d-block"></span></div>'
+                     f'<div class="col min-w-0"><div class="fw-medium">{link(a["title"], a["url"])}'
+                     f'{unread}</div>'
+                     f'<div class="text-secondary small mt-1 d-flex gap-2 align-items-center">{course_badge(a["course"], colors)}'
+                     f'{rel_day(a["when"].date(), today)} {a["when"]:%H:%M}</div>'
+                     f'<div class="text-secondary small mt-2 preview">{esc(a["preview"])}</div>{mentions}</div></div></div>')
+    if items:
+        p.append(f'<div class="col-12"><section id="news" class="card"><div class="card-header"><h3 class="card-title">'
+                 f'<i class="ti ti-speakerphone"></i> 最近的公告</h3><div class="card-actions text-secondary small">'
+                 f'带日期的句子会自动标出来</div></div><div class="list-group list-group-flush">{"".join(items)}</div></section></div>')
+    p.append('</div>')
+    p.append(f'<footer class="text-center text-secondary small mt-4">数据更新于 {now:%-m/%-d %H:%M}（太平洋时间）· '
+             f'每天自动更新 4 次 · 倒计时实时计算<br>用 <a href="https://tabler.io" target="_blank" rel="noopener">Tabler</a> 和 '
+             f'<a href="https://fullcalendar.io" target="_blank" rel="noopener">FullCalendar</a> 构建</footer>')
 
-    unscheduled = [c for c in cfg.get("classes", []) if not c.get("days")]
-    if unscheduled:
-        names = "、".join(f'{c["course"]} {c.get("kind", "")}'.strip() for c in unscheduled)
-        parts.append(f'<p class="hint foot-note">课表还缺：{esc(names)}。在 assistant/schedule.toml 里补上时间就会显示。</p>')
-
-    parts.append(f'<footer>数据更新于 {now:%-m/%-d %H:%M}（太平洋时间），每天自动更新 4 次。倒计时是实时计算的。</footer>')
-    return PAGE.replace("{{BODY}}", "\n".join(parts))
-
-
-PAGE = """<!doctype html>
-<html lang="zh"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Wendy 今日待办</title>
-<style>
-:root{--bg:#f6f7fb;--card:#fff;--text:#1b1d22;--muted:#6b7080;--line:#e6e8ef;--blue:#2d6cdf;
---red:#d93025;--red-bg:#fdecea;--orange:#c26401;--orange-bg:#fff3e0;--green:#1e8e3e;--green-bg:#e6f4ea}
-@media (prefers-color-scheme:dark){:root{--bg:#121318;--card:#1c1e25;--text:#e8e9ee;--muted:#9aa0ad;
---line:#2c2f39;--blue:#7aa7ff;--red:#ff7b72;--red-bg:#3a1d1d;--orange:#ffb35c;--orange-bg:#3a2a14;
---green:#6fd08c;--green-bg:#17301f}}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 -apple-system,"PingFang SC","Noto Sans SC",sans-serif}
-.wrap{max-width:720px;margin:0 auto;padding:20px 16px 40px}
-h1{font-size:24px;margin:0}.sub{color:var(--muted);margin:2px 0 10px}
-h2{font-size:17px;margin:0 0 10px}h3{font-size:14px;color:var(--muted);margin:14px 0 6px;font-weight:600}
-section,details{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin:14px 0}
-summary{cursor:pointer;font-weight:600}
-.chips{display:flex;flex-wrap:wrap;gap:8px}
-.chip{font-size:13px;padding:3px 10px;border-radius:999px;border:1px solid var(--line)}
-.chip.red{color:var(--red);background:var(--red-bg);border-color:transparent}
-.chip.orange{color:var(--orange);background:var(--orange-bg);border-color:transparent}
-.chip.solid{background:var(--red);color:#fff}
-.alert{background:var(--red-bg);color:var(--red);border-radius:12px;padding:10px 14px;margin:12px 0}
-.list,.ann{list-style:none;margin:0;padding:0}
-.task,.cls{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--line)}
-.list>li:first-child{border-top:0}
-.main{flex:1;min-width:0}.title{font-weight:600;overflow-wrap:anywhere}
-.title a{color:inherit;text-decoration:none;border-bottom:1px dashed var(--muted)}
-.meta,.note{font-size:13px;color:var(--muted)}.note{margin-top:2px}
-.meta a,.ann a,footer a{color:var(--blue)}
-.course{display:inline-block;font-size:12px;font-weight:600;color:var(--blue);background:color-mix(in srgb,var(--blue) 12%,transparent);padding:0 6px;border-radius:6px}
-.time{font-variant-numeric:tabular-nums;font-weight:600;min-width:92px}
-.cd{flex:none;font-size:13px;font-weight:600;padding:3px 8px;border-radius:8px;white-space:nowrap;background:var(--bg);color:var(--muted);font-variant-numeric:tabular-nums}
-.cd.u-over,.cd.u-24{background:var(--red-bg);color:var(--red)}.cd.u-72{background:var(--orange-bg);color:var(--orange)}
-.cd.u-week{color:var(--blue)}.cd.live{background:var(--green-bg);color:var(--green)}
-.task.done .title,.task.checked .title{text-decoration:line-through;color:var(--muted)}
-.task.done .cd,.task.checked .cd{visibility:hidden}
-.tag{font-size:11px;margin-left:6px;padding:1px 6px;border-radius:6px;vertical-align:2px}
-.done-tag{background:var(--green-bg);color:var(--green)}.unread{background:var(--orange-bg);color:var(--orange)}
-.preview{font-size:13px;margin-top:4px;overflow-wrap:anywhere}
-.mention{font-size:13px;margin-top:6px;padding:6px 8px;border-radius:8px;background:var(--orange-bg);overflow-wrap:anywhere}
-.check{display:inline-flex;gap:6px;align-items:center;font-size:13px;margin-top:4px;color:var(--muted)}
-.ann li{padding:8px 0;border-top:1px solid var(--line)}.ann li:first-child{border-top:0}
-.empty{color:var(--muted);margin:0}.hint{font-size:13px;color:var(--muted);margin:8px 0 0}
-.foot-note{margin:14px 4px}
-footer{font-size:12px;color:var(--muted);text-align:center;margin-top:20px}
-@media (max-width:480px){.task,.cls{flex-wrap:wrap}.cd{order:-1}.time{min-width:0;width:100%}}
-</style></head>
-<body><div class="wrap">
-{{BODY}}
-</div>
-<script>
-(function(){
-  function fmt(ms){
-    var s=Math.floor(Math.abs(ms)/1000),d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60),x=s%60;
-    return d?d+"天"+h+"小时":h?h+"小时"+m+"分":m+"分"+x+"秒";
-  }
-  function tick(){
-    var now=Date.now();
-    document.querySelectorAll(".task .cd").forEach(function(el){
-      var ms=new Date(el.dataset.due)-now;
-      el.textContent=ms<0?"已过截止 "+fmt(ms):"还剩 "+fmt(ms);
-      el.className="cd "+(ms<0?"u-over":ms<864e5?"u-24":ms<2592e5?"u-72":ms<6048e5?"u-week":"");
-    });
-    document.querySelectorAll(".cls").forEach(function(li){
-      var el=li.querySelector(".cls-cd"),a=new Date(li.dataset.start)-now,b=new Date(li.dataset.end)-now;
-      if(a>0){el.textContent=fmt(a)+"后上课";el.className="cd cls-cd"+(a<36e5?" u-72":"");}
-      else if(b>0){el.textContent="上课中";el.className="cd cls-cd live";}
-      else{el.textContent="已结束";el.className="cd cls-cd";}
-    });
-  }
-  function store(){try{return window.localStorage}catch(e){return null}}
-  var ls=store();
-  document.querySelectorAll(".check input").forEach(function(box){
-    var key="wendy-done:"+box.dataset.key,li=box.closest(".task");
-    try{box.checked=!!(ls&&ls.getItem(key));}catch(e){}
-    li.classList.toggle("checked",box.checked);
-    box.addEventListener("change",function(){
-      li.classList.toggle("checked",box.checked);
-      try{box.checked?ls.setItem(key,"1"):ls.removeItem(key);}catch(e){}
-    });
-  });
-  tick();setInterval(tick,1000);
-})();
-</script>
-</body></html>
-"""
+    # 给前端的数据："下一节课 / 最近截止"卡片和课程表
+    upcoming = []
+    for i in range(8):
+        upcoming += classes_on(today + timedelta(days=i), classes, holidays)
+    data = {
+        "classes": [{"course": c["course"], "kind": c.get("kind", ""), "where": c.get("where", ""),
+                     "start": c["start_dt"].isoformat(), "end": c["end_dt"].isoformat(),
+                     "color": HEX[colors.get(c["course"], "secondary")]} for c in upcoming],
+        "tasks": [{"id": t.id, "title": t.title, "course": t.course, "due": t.due.isoformat(), "url": t.url,
+                   "manual": t.manual, "color": HEX[colors.get(t.course, "secondary")]} for t in pending],
+        "calendar": calendar_payload(today, cfg, classes, tasks, colors),
+    }
+    page = TEMPLATE.read_text(encoding="utf-8")
+    return (page.replace("{{BODY}}", "\n".join(p))
+                .replace("{{DATA}}", json.dumps(data, ensure_ascii=False).replace("</", "<\\/")))
 
 
 def main():
@@ -478,13 +618,14 @@ def main():
         cfg = tomllib.load(f)
     names = {int(k): v for k, v in cfg.get("courses", {}).items()}
 
-    tasks, announcements = [], []
+    courses, tasks, announcements = [], [], []
     if not os.environ.get("CANVAS_TOKEN"):
         warnings.append("没读到 Canvas：没有设置 CANVAS_TOKEN。下面只有课表和固定作业")
     else:
         try:
+            courses = canvas_get("courses", {"enrollment_state": "active", "include[]": "sections", "per_page": 100})
             tasks = canvas_tasks(now, names)
-            announcements = canvas_announcements(now, names)
+            announcements = canvas_announcements(now, names, courses)
             tasks += announcement_tasks(announcements, tasks, now)
         except urllib.error.HTTPError as e:
             reason = "token 失效或过期（401），需要重新生成" if e.code == 401 else f"返回 HTTP {e.code}"
@@ -493,12 +634,24 @@ def main():
             warnings.append(f"没读到 Canvas：连接出错（{type(e).__name__}）。下面只有课表和固定作业")
     tasks += recurring_tasks(now, cfg)
 
+    timed, online = [], []
+    sections = enrolled_sections(courses)
+    if sections:
+        try:
+            timed, online = banner_classes(sections)
+        except Exception as e:  # noqa: BLE001 - 选课系统偶尔维护，不影响其他部分
+            warnings.append(f"没读到选课系统的课表（{type(e).__name__}），课表只显示手动填写的部分")
+    notes = cfg.get("notes", [])
+    classes = apply_notes(timed, notes) + cfg.get("classes", [])  # [[classes]] 是手动添加的额外日程
+    online = apply_notes(online, notes)
+
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render(now, cfg, tasks, announcements, warnings), encoding="utf-8")
+    out.write_text(render(now, cfg, classes, online, tasks, announcements, warnings), encoding="utf-8")
     count = lambda src: sum(t.source == src for t in tasks)  # noqa: E731
     print(f"✓ {out}  Canvas {count('Canvas')} 项 · 公告里读到 {count('公告')} 项 · "
-          f"固定作业 {len(tasks) - count('Canvas') - count('公告')} 项 · 公告 {len(announcements)} 条"
+          f"固定作业 {len(tasks) - count('Canvas') - count('公告')} 项 · 公告 {len(announcements)} 条 · "
+          f"课 {len(timed)} 个时段 + 线上 {len(online)} 门（来自选课系统）"
           + "".join(f"\n  ⚠️ {w}" for w in warnings))
 
 
