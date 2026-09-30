@@ -3,6 +3,12 @@ name: Deploy encrypted site to GitHub Pages
 on:
   push:
     branches: ["main"]
+  schedule:
+    # 每天 4 次刷新"今日待办"（UTC 时间；括号里是太平洋夏令时）
+    - cron: "5 7 * * *"    # 00:05
+    - cron: "0 13 * * *"   # 06:00
+    - cron: "0 19 * * *"   # 12:00
+    - cron: "0 1 * * *"    # 18:00
   workflow_dispatch:
 
 permissions:
@@ -24,13 +30,46 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 课表和明文页面只存在于这台临时机器上，不会提交到公开仓库
+      - name: Build today page from Canvas
+        env:
+          CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
+          SCHEDULE_TOML: ${{ secrets.SCHEDULE_TOML }}
+        run: |
+          if [ -n "$SCHEDULE_TOML" ]; then printf '%s\n' "$SCHEDULE_TOML" > assistant/schedule.toml; fi
+          python3 assistant/build_today.py --out _build/today/index.html
+
+      - name: Encrypt and assemble site
+        env:
+          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
+        run: |
+          test -n "$SITE_PASSWORD" || { echo "::error::缺少 SITE_PASSWORD secret"; exit 1; }
+          mkdir -p _site/today
+          cp index.html _site/index.html
+          touch _site/.nojekyll
+          npx --yes staticrypt@3 _build/today/index.html -d _site/today \
+            -p "$SITE_PASSWORD" --short --remember 30 \
+            --template-title "Wendy · 今日待办" \
+            --template-instructions "输入口令查看今天要做的事" \
+            --template-button "打开" \
+            --template-placeholder "口令" \
+            --template-remember "30 天内记住我" \
+            --template-error "口令不对" \
+            --template-color-primary "#2d6cdf"
+          test -s _site/today/index.html
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: '.'
+          path: '_site'
 
       - name: Deploy to GitHub Pages
         id: deployment

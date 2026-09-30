@@ -1,0 +1,34 @@
+# 示例配置（不含个人信息）。真实课表放在 assistant/schedule.toml（已被 git 忽略），
+# 并用 `mise run schedule-upload` 上传到 GitHub Secret SCHEDULE_TOML，云端生成页面时使用。
+
+[term]
+name = "Fall 2026"
+week1_monday = "2026-09-28"
+last_class_day = "2026-12-04"
+holidays = ["2026-11-11", "2026-11-26", "2026-11-27"]
+
+# Canvas 课程 id → 页面上显示的名字（可选）
+[courses]
+"123456" = "MATH 001"
+
+[[classes]]
+course = "MATH 001"
+kind = "大课"
+days = ["Mon", "Wed"]
+start = "10:00"
+end = "10:50"
+where = "Building 101"
+note = "可选备注"
+from = "2026-09-28"     # 可选：从哪天开始
+until = "2026-12-04"    # 可选：到哪天结束
+
+[[recurring]]            # Canvas 读不到的固定作业
+course = "MATH 001"
+title = "网上作业"
+platform = "Homework site"
+weekday = "Fri"
+due = "23:59"
+from = "2026-10-02"
+until = "2026-12-04"
+url = "https://example.com"
+note = "可选备注"

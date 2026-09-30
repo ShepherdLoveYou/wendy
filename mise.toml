@@ -1,0 +1,33 @@
+# 本地开发：
+#   mise run today            生成并打开今日页面（明文，只在本地）
+#   mise run encrypt          本地预览加密后的口令页
+#   mise run schedule-upload  改完 assistant/schedule.toml 后，上传到 GitHub Secret 并触发一次部署
+#
+# 需要的环境变量写在 .env（已被 git 忽略）：
+#   CANVAS_TOKEN=...     Canvas → Account → Settings → New Access Token
+#   SITE_PASSWORD=...    网站口令，只在 mise run encrypt 时用到
+
+[env]
+_.file = { path = ".env", redact = true }
+
+[tasks.today]
+description = "从 Canvas 生成今日待办页面（明文，只在本地）并用浏览器打开"
+run = [
+  "python3 assistant/build_today.py --out _build/today/index.html",
+  "open _build/today/index.html",
+]
+
+[tasks.encrypt]
+description = "本地加密预览（和线上一样的 Staticrypt 口令页）"
+depends = ["today"]
+run = [
+  "npx --yes staticrypt@3 _build/today/index.html -d _site/today -p \"$SITE_PASSWORD\" --short --remember 30",
+  "open _site/today/index.html",
+]
+
+[tasks.schedule-upload]
+description = "把本地课表 assistant/schedule.toml 上传为 GitHub Secret，并重新部署"
+run = [
+  "gh secret set SCHEDULE_TOML -R ShepherdLoveYou/wendy < assistant/schedule.toml",
+  "gh workflow run deploy.yml -R ShepherdLoveYou/wendy",
+]

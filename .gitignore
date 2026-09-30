@@ -1,0 +1,6 @@
+.env
+_build/
+_site/
+_plain/
+__pycache__/
+assistant/schedule.toml
