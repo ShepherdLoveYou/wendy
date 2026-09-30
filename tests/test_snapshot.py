@@ -72,3 +72,11 @@ def test_archive_add_keeps_last_30_days(tmp_path):
 def test_history_links_render(build):
     page = build(T1, archive=["2026-10-04", "2026-10-03"])
     assert "历史快照" in page.html and 'href="archive/2026-10-04.html"' in page.html
+
+
+def test_ai_extracted_announcement_items_do_not_cause_false_changes():
+    base = {"generated": "2026-10-05T12:00:00-07:00", "announcements": {"1": {"title": "x", "course": "TEST 101"}},
+            "classes": [], "tasks": {"ann-1-1009": {"title": "填问卷", "course": "TEST 101",
+                                                    "due": "2026-10-09T23:59:00-07:00", "done": False, "source": "公告"}}}
+    cur = {**base, "generated": "2026-10-05T18:00:00-07:00", "tasks": {}}    # 这次 AI 没读出这一条
+    assert sn.diff(base, cur) == {"since": base["generated"]}

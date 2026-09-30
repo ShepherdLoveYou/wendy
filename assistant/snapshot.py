@@ -39,7 +39,10 @@ def diff(prev: dict | None, cur: dict) -> dict:
     """和上一份快照比：新作业、刚交掉的、改了截止时间的、被撤下的、新公告、课表变化。"""
     if not prev:
         return {}
-    p, c = prev.get("tasks", {}), cur["tasks"]
+    # 只比较 Canvas 上的正式作业。公告里读出的事项由 AI 提取，每次可能略有不同，比较它会产生"被撤下"之类的误报；
+    # 公告本身的新增已经在 new_announcements 里报告了
+    p = {k: v for k, v in prev.get("tasks", {}).items() if v.get("source") == "Canvas"}
+    c = {k: v for k, v in cur["tasks"].items() if v.get("source") == "Canvas"}
     now = cur["generated"]
     out = {
         "since": prev.get("generated", ""),
