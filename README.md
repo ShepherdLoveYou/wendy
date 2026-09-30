@@ -31,7 +31,7 @@
   npx staticrypt@3 "<明文文件>.html" -d site_tmp --remember 30   # 会提示输入口令
   ```
   明文 HTML 不要放进仓库。
-- **更新喵教授框架**：`git pull upstream main`（upstream 是 ShepherdLoveYou/purrfessor）。
+- **更新喵教授框架**：`git pull --no-rebase upstream main`（upstream 是 ShepherdLoveYou/purrfessor）。
   这份 README 不会被覆盖：`.gitattributes` 里设置了 `merge=ours`，新的电脑上先运行一次
   `git config merge.ours.driver true`。
 - **本地测试**：`mise run setup && mise run test`。
@@ -53,5 +53,5 @@ Both pages need the password. The daily page is rebuilt 4 times a day by
   `purrfessor config-upload`.
 - **Update the home page**: re-encrypt the plaintext HTML from the repo root (the salt in `.staticrypt.json` is
   reused), replace `site/index.html` with the output, then commit and push. Never commit the plaintext.
-- **Update the framework**: `git pull upstream main`. This README is kept by `merge=ours` in `.gitattributes`
+- **Update the framework**: `git pull --no-rebase upstream main`. This README is kept by `merge=ours` in `.gitattributes`
   (run `git config merge.ours.driver true` once per clone).
