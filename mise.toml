@@ -11,6 +11,7 @@
 
 [env]
 _.file = { path = ".env", redact = true }
+PYDANTIC_AI_NO_BANNER = "1"
 
 [tasks.today]
 description = "从 Canvas 生成今日待办页面（明文，只在本地）并用浏览器打开"

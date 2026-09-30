@@ -1,1 +1,2 @@
 google-genai>=2.25,<3
+pydantic-ai-slim[google]>=2.52,<3

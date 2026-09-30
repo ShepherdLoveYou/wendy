@@ -49,15 +49,36 @@ jobs:
       - name: Test
         run: pytest -q tests
 
+      - name: Setup Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      # 快照存在网站本身：取回上一份（加密的）页面和历史快照，在这台临时机器上解密，只用来算"和上次比的变化"
+      - name: Restore last snapshot from the live site
+        env:
+          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
+          BASE_URL: ${{ steps.pages.outputs.base_url }}
+        run: |
+          python assistant/snapshot.py fetch --base "$BASE_URL" --prev-dir _prev --archive-dir _site/today/archive
+          if [ -f _prev/index.html ]; then
+            npx --yes staticrypt@3 _prev/index.html --decrypt -p "$SITE_PASSWORD" -d _prev/plain >/dev/null 2>&1 \
+              || echo "上一份快照解密失败（比如改过口令），这次不做对比"
+          fi
+
       # 课表和明文页面只存在于这台临时机器上，不会提交到公开仓库
-      - name: Build today page from Canvas
+      - name: Build today page (Canvas + schedule + AI brief)
         env:
           CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
           SCHEDULE_TOML: ${{ secrets.SCHEDULE_TOML }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}   # 可选：翻译成中文、从公告里理解截止日期
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}   # 可选：翻译、理解公告、今日简报智能体
+          BASE_URL: ${{ steps.pages.outputs.base_url }}
+          PYDANTIC_AI_NO_BANNER: "1"
         run: |
           if [ -n "$SCHEDULE_TOML" ]; then printf '%s\n' "$SCHEDULE_TOML" > assistant/schedule.toml; fi
-          python assistant/build_today.py --out _build/today/index.html
+          BASE_PATH=$(python -c "import os,urllib.parse;print(urllib.parse.urlparse(os.environ['BASE_URL']).path.rstrip('/'))")
+          python assistant/build_today.py --out _build/today/index.html \
+            --prev _prev/plain/index.html --archive-dates _prev/archive.json \
+            --archive-base "$BASE_PATH/today/archive/"
 
       - name: Encrypt and assemble site
         env:
@@ -77,9 +98,8 @@ jobs:
             --template-error "口令不对" \
             --template-color-primary "#2d6cdf"
           test -s _site/today/index.html
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
+          # 这次的（加密）页面存成当天的快照，保留最近 30 天
+          python assistant/snapshot.py add --site-dir _site/today --date "$(TZ=America/Los_Angeles date +%F)" --keep 30
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

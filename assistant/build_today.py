@@ -28,7 +28,9 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import agent as brief_agent
 from ai_enrich import enrich, parse_due
+from snapshot import diff, load_prev_state, make_state
 
 HERE = Path(__file__).resolve().parent
 TZ = ZoneInfo("America/Los_Angeles")
@@ -195,6 +197,35 @@ def announcement_tasks(anns: list[dict], canvas: list[Task], now: datetime) -> l
                             course=a["course"], due=due, url=a["url"], source="公告",
                             note=f"“{m['quote']}” —— {how}，请点开核对"))
     return out
+
+
+def task_details(task: Task) -> str:
+    """智能体的只读工具用：从 Canvas 读作业说明（去掉格式）。"""
+    m = re.search(r"/courses/(\d+)/(assignments|quizzes|discussion_topics)/(\d+)", task.url or "")
+    if not m or task.source != "Canvas":
+        return task.note or "（Canvas 之外的任务，没有更多说明）"
+    data = canvas_get(f"courses/{m[1]}/{m[2]}/{m[3]}")
+    return strip_html(data.get("description") or data.get("message") or "") if isinstance(data, dict) else ""
+
+
+def agent_deps(now: datetime, cfg: dict, tasks: list[Task], classes: list[dict], announcements: list[dict],
+               changes: dict) -> "brief_agent.Deps":
+    holidays = {str(h) for h in cfg["term"].get("holidays", [])}
+    overdue, pending, _ = classify(now, tasks, cfg["term"])
+    by_id = {t.id: t for t in overdue + pending}
+    views = [{"id": t.id, "title": t.zh or t.title, "course": t.course, "due": t.due.isoformat(),
+              "points": t.points, "source": t.source, "state": "overdue" if t in overdue else "pending",
+              "hours_left": round((t.due - now).total_seconds() / 3600, 1)} for t in overdue + pending]
+
+    def cls(day):
+        return [{"course": c["course"], "kind": c.get("kind", ""), "where": c.get("where", ""),
+                 "start": f"{c['start_dt']:%H:%M}", "end": f"{c['end_dt']:%H:%M}"} for c in classes_on(day, classes, holidays)]
+    anns = [{"id": str(a["id"]), "course": a["course"], "title": a.get("zh_title") or a["title"],
+             "summary": a.get("summary") or a["preview"], "posted": a["when"].isoformat()}
+            for a in announcements if a["when"] and a["when"] >= now - timedelta(days=10)]
+    return brief_agent.Deps(now=now, tasks=views, classes_today=cls(now.date()),
+                            classes_tomorrow=cls(now.date() + timedelta(days=1)), announcements=anns,
+                            changes=changes, details=lambda tid: task_details(by_id[tid]) if tid in by_id else "")
 
 
 def apply_ai(ai: dict, tasks: list[Task], announcements: list[dict]) -> None:
@@ -543,8 +574,83 @@ def calendar_payload(today: date, cfg: dict, classes: list[dict], tasks: list[Ta
             "hiddenDays": [] if weekend else [0, 6]}
 
 
+def classify(now: datetime, tasks: list[Task], term: dict) -> tuple[list[Task], list[Task], list[Task]]:
+    """(逾期, 待办, 最近已交)。页面和智能体都用这一套判断。"""
+    term_start = as_date(term["week1_monday"]) - timedelta(days=14)   # 上学期的旧账不算
+    overdue = sorted((t for t in tasks if not t.done and not t.manual and t.due < now and t.due.date() >= term_start),
+                     key=lambda t: t.due)
+    pending = sorted((t for t in tasks if not t.done and t.due >= now - timedelta(hours=12) and t not in overdue),
+                     key=lambda t: t.due)
+    done = sorted((t for t in tasks if t.done and t.due >= now - timedelta(days=3)), key=lambda t: t.due)
+    return overdue, pending, done
+
+
+def brief_card(brief, tasks: list[Task], colors: dict) -> str:
+    """智能体写的今日简报。所有引用的作业 id 都已经过校验。"""
+    by_id = {t.id: t for t in tasks}
+    pri = "".join(
+        f'<div class="list-group-item"><div class="row g-3 align-items-start"><div class="col-auto">'
+        f'<span class="avatar avatar-sm bg-primary-lt fw-bold">{i}</span></div><div class="col min-w-0">'
+        f'<div class="fw-medium">{course_badge(by_id[p.task_id].course, colors)} '
+        f'{link(by_id[p.task_id].zh or by_id[p.task_id].title, by_id[p.task_id].url)}</div>'
+        f'<div class="text-secondary small mt-1">{esc(p.why)}</div>'
+        f'<div class="small mt-1"><i class="ti ti-player-play text-primary"></i> {esc(p.first_step)}</div></div></div></div>'
+        for i, p in enumerate(brief.priorities, 1))
+    plan = "".join(
+        f'<div class="list-group-item py-2"><div class="row g-3"><div class="col-auto fw-bold time-col">'
+        f'{esc(b.start)}–{esc(b.end)}</div><div class="col min-w-0">{esc(b.activity)}</div></div></div>' for b in brief.plan)
+    risks = "".join(f'<div class="alert alert-warning py-2 px-3 mb-2 small"><i class="ti ti-alert-triangle"></i> {esc(r)}</div>'
+                    for r in brief.risks)
+    return (f'<div class="col-12"><section id="brief" class="card"><div class="card-header">'
+            f'<h3 class="card-title"><i class="ti ti-compass"></i> 今日简报</h3>'
+            f'<div class="card-actions"><span class="badge bg-purple-lt">AI 生成 · 仅供参考</span></div></div>'
+            f'<div class="card-body pb-2"><div class="h3 mb-0">{esc(brief.headline)}</div></div>'
+            + (f'<div class="list-group-header">先做这几件</div><div class="list-group list-group-flush">{pri}</div>' if pri else "")
+            + (f'<div class="list-group-header">今天的时间安排</div><div class="list-group list-group-flush">{plan}</div>' if plan else "")
+            + (f'<div class="card-body pb-1">{risks}</div>' if risks else "")
+            + (f'<div class="card-footer text-secondary small"><i class="ti ti-history"></i> {esc(brief.changes)}</div>'
+               if brief.changes else "")
+            + '</section></div>')
+
+
+def changes_card(changes: dict, colors: dict) -> str:
+    """和上一份快照比的变化（代码算出，不依赖 AI）。"""
+    if not changes:
+        return ""
+    def when(iso):
+        d = datetime.fromisoformat(iso)
+        return f"{d.month}/{d.day} {WEEKDAYS_CN[d.weekday()]} {d:%H:%M}"
+    rows = []
+    for t in changes.get("new_tasks", []):
+        rows.append(("plus", "green", "新作业", f'{course_badge(t["course"], colors)} {esc(t["title"])} · {when(t["due"])} 截止'))
+    for t in changes.get("completed", []):
+        rows.append(("check", "green", "已交", f'{course_badge(t["course"], colors)} {esc(t["title"])}'))
+    for t in changes.get("due_changed", []):
+        rows.append(("calendar-event", "orange", "截止改了",
+                     f'{course_badge(t["course"], colors)} {esc(t["title"])} · {when(t["old_due"])} → <b>{when(t["due"])}</b>'))
+    for t in changes.get("removed", []):
+        rows.append(("trash", "secondary", "被撤下", f'{course_badge(t["course"], colors)} {esc(t["title"])}'))
+    for a in changes.get("new_announcements", []):
+        rows.append(("speakerphone", "blue", "新公告", f'{course_badge(a["course"], colors)} {esc(a["title"])}'))
+    for c in changes.get("classes_added", []):
+        rows.append(("calendar-plus", "orange", "课表新增", esc(c.replace("|", " · "))))
+    for c in changes.get("classes_removed", []):
+        rows.append(("calendar-minus", "orange", "课表去掉", esc(c.replace("|", " · "))))
+    if not rows:
+        return ""
+    since = datetime.fromisoformat(changes["since"]) if changes.get("since") else None
+    items = "".join(f'<div class="list-group-item py-2"><div class="row g-2 align-items-center"><div class="col-auto">'
+                    f'<span class="badge bg-{c}-lt"><i class="ti ti-{i}"></i> {label}</span></div>'
+                    f'<div class="col min-w-0 small">{body}</div></div></div>' for i, c, label, body in rows)
+    return (f'<div class="col-12"><section id="changes" class="card"><div class="card-header"><h3 class="card-title">'
+            f'<i class="ti ti-arrows-diff"></i> 和上次比</h3><div class="card-actions text-secondary small">'
+            f'{"上次更新：" + when(since.isoformat()) if since else ""}</div></div>'
+            f'<div class="list-group list-group-flush">{items}</div></section></div>')
+
+
 def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], tasks: list[Task],
-           announcements: list[dict], warnings: list[str], ai_model: str = "") -> str:
+           announcements: list[dict], warnings: list[str], ai_model: str = "", brief=None, changes=None,
+           state=None, archive=(), archive_base: str = "archive/") -> str:
     today = now.date()
     holidays = {str(h) for h in cfg["term"].get("holidays", [])}
     colors = course_colors([c["course"] for c in classes + online] + [t.course for t in tasks])
@@ -552,12 +658,7 @@ def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], ta
     first, last = as_date(cfg["term"]["week1_monday"]), as_date(cfg["term"]["last_class_day"])
     total_weeks = (last - first).days // 7 + 1
     term_pct = max(0, min(100, round((today - first).days / max((last - first).days, 1) * 100)))
-    term_start = as_date(cfg["term"]["week1_monday"]) - timedelta(days=14)   # 上学期的旧账不算
-    overdue = sorted((t for t in tasks if not t.done and not t.manual and t.due < now and t.due.date() >= term_start),
-                     key=lambda t: t.due)
-    pending = sorted((t for t in tasks if not t.done and t.due >= now - timedelta(hours=12) and t not in overdue),
-                     key=lambda t: t.due)
-    done = sorted((t for t in tasks if t.done and t.due >= now - timedelta(days=3)), key=lambda t: t.due)
+    overdue, pending, done = classify(now, tasks, cfg["term"])
     horizon = today + timedelta(days=14)
     soon = [t for t in pending if t.due.date() <= horizon]
     later = [t for t in pending if t.due.date() > horizon]
@@ -591,6 +692,9 @@ def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], ta
     p.append(stat_card("alert-triangle", "red" if overdue else "green", len(overdue), "逾期未交", "#todo"))
     p.append(next_card("next-class", "下一节课", "clock"))
     p.append(next_card("next-due", "最近的截止", "flag"))
+    if brief:
+        p.append(brief_card(brief, tasks, colors))
+    p.append(changes_card(changes or {}, colors))
     meme_html, meme_data = meme_card(now)
     p.append(meme_html)
 
@@ -663,6 +767,9 @@ def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], ta
                  f'<i class="ti ti-speakerphone"></i> 最近的公告</h3><div class="card-actions text-secondary small">'
                  f'带日期的句子会自动标出来</div></div><div class="list-group list-group-flush">{"".join(items)}</div></section></div>')
     p.append('</div>')
+    if archive:
+        links = " · ".join(f'<a href="{esc(archive_base)}{d}.html">{int(d[5:7])}/{int(d[8:10])}</a>' for d in archive[:14])
+        p.append(f'<div class="text-center small mt-4"><i class="ti ti-history"></i> 历史快照：{links}</div>')
     p.append(f'<footer class="text-center text-secondary small mt-4">数据更新于 {now:%-m/%-d %H:%M}（太平洋时间）· '
              f'每天自动更新 4 次 · 倒计时实时计算{" · 中文由 " + esc(ai_model) + " 翻译" if ai_model else ""}<br>'
              f'用 <a href="https://tabler.io" target="_blank" rel="noopener">Tabler</a> 和 '
@@ -680,6 +787,7 @@ def render(now: datetime, cfg: dict, classes: list[dict], online: list[dict], ta
                    "manual": t.manual, "color": HEX[colors.get(t.course, "secondary")]} for t in pending],
         "calendar": calendar_payload(today, cfg, classes, tasks, colors),
         "meme": meme_data,
+        "state": state or {},
     }
     page = TEMPLATE.read_text(encoding="utf-8")
     return (page.replace("{{BODY}}", "\n".join(p))
@@ -691,6 +799,9 @@ def main(argv: list[str] | None = None):
     ap.add_argument("--out", default="_build/today/index.html")
     ap.add_argument("--config", default=str(HERE / "schedule.toml"))
     ap.add_argument("--now", help="调试用：假装现在是这个时间（ISO 格式）")
+    ap.add_argument("--prev", help="上一份（已解密的）页面，用来算和上次比的变化")
+    ap.add_argument("--archive-dates", help="线上已有的历史快照日期（JSON：{\"dates\": [...]}）")
+    ap.add_argument("--archive-base", default="archive/", help="历史快照的链接前缀")
     args = ap.parse_args(argv)
 
     now = datetime.fromisoformat(args.now).astimezone(TZ) if args.now else datetime.now(TZ)
@@ -735,9 +846,19 @@ def main(argv: list[str] | None = None):
     classes = apply_notes(timed, notes) + cfg.get("classes", [])  # [[classes]] 是手动添加的额外日程
     online = apply_notes(online, notes)
 
+    state = make_state(now, tasks, announcements, classes)
+    changes = diff(load_prev_state(args.prev), state)
+    brief, brief_info = brief_agent.run_brief(agent_deps(now, cfg, tasks, classes, announcements, changes))
+    print(f"  · 今日简报：{brief_info}")
+    archive = []
+    if args.archive_dates and Path(args.archive_dates).exists():
+        archive = [d for d in json.loads(Path(args.archive_dates).read_text()).get("dates", []) if d != now.date().isoformat()]
+
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render(now, cfg, classes, online, tasks, announcements, warnings, ai_model), encoding="utf-8")
+    out.write_text(render(now, cfg, classes, online, tasks, announcements, warnings, ai_model,
+                          brief=brief, changes=changes, state=state, archive=archive, archive_base=args.archive_base),
+                   encoding="utf-8")
     count = lambda src: sum(t.source == src for t in tasks)  # noqa: E731
     print(f"✓ {out}  Canvas {count('Canvas')} 项 · 公告里读到 {count('公告')} 项 · "
           f"固定作业 {len(tasks) - count('Canvas') - count('公告')} 项 · 公告 {len(announcements)} 条 · "

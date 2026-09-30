@@ -84,6 +84,8 @@ class FakeCanvas:
             codes = set(params["context_codes[]"])
             return [a for a in self.announcements if a["context_code"] in codes
                     and lo <= datetime.fromisoformat(a["posted_at"].replace("Z", "+00:00")).date() <= hi]
+        if path.startswith("courses/") and "/assignments/" in path:
+            return {"description": "<p>Write a 1500-word essay. <b>Rubric</b> attached.</p>"}
         raise AssertionError(f"unexpected Canvas path {path}")
 
 
@@ -216,8 +218,10 @@ def parse(html: str) -> Page:
 def build(monkeypatch, tmp_path):
     """build(now, canvas, ai=None, banner=BANNER, schedule=SCHEDULE, banner_fail=False) → Page"""
     def run(now: datetime, canvas: FakeCanvas | None = None, ai=None, banner=None, schedule=SCHEDULE,
-            banner_fail=False, token=True) -> Page:
+            banner_fail=False, token=True, model=None, prev: Page | None = None, archive=None) -> Page:
         canvas = canvas or FakeCanvas()
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)          # 测试里绝不调用真实模型
+        monkeypatch.setattr(bt.brief_agent, "default_model", lambda: model)
         monkeypatch.setattr(bt, "canvas_get", canvas.get)
         monkeypatch.setattr(bt, "banner_opener", lambda: FakeOpener(BANNER if banner is None else banner, banner_fail))
         monkeypatch.setattr(bt, "enrich", (lambda *a: ai(*a)) if callable(ai) else (lambda *a: ai))
@@ -231,6 +235,13 @@ def build(monkeypatch, tmp_path):
         else:
             cfg.write_text(schedule, encoding="utf-8")
         out = tmp_path / "out.html"
-        bt.main(["--out", str(out), "--config", str(cfg), "--now", now.isoformat()])
+        argv = ["--out", str(out), "--config", str(cfg), "--now", now.isoformat()]
+        if prev is not None:
+            (tmp_path / "prev.html").write_text(prev.html, encoding="utf-8")
+            argv += ["--prev", str(tmp_path / "prev.html")]
+        if archive is not None:
+            (tmp_path / "archive.json").write_text(json.dumps({"dates": archive}), encoding="utf-8")
+            argv += ["--archive-dates", str(tmp_path / "archive.json")]
+        bt.main(argv)
         return parse(out.read_text(encoding="utf-8"))
     return run

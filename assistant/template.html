@@ -59,6 +59,8 @@
   <div class="page-wrapper">
     <div class="page-body mt-3">
       <div class="container-xl">
+<div class="alert alert-info mb-3" id="snapshot-note" hidden><i class="ti ti-history"></i>
+  这是 <b id="snapshot-date"></b> 的历史快照，内容不会再更新。<a href="../">查看最新的 →</a></div>
 {{BODY}}
       </div>
     </div>
@@ -93,6 +95,11 @@
   }
   function badgeFor(ms) { return ms < 864e5 ? "bg-red-lt" : ms < 2592e5 ? "bg-orange-lt" : ms < 6048e5 ? "bg-blue-lt" : "bg-secondary-lt"; }
   function setBadge(el, cls) { BADGES.forEach(function (b) { el.classList.remove(b); }); el.classList.add(cls); }
+
+  // 打开的是 archive/2026-09-28.html 这种历史快照时，顶部提示一下
+  var snap = location.pathname.match(/\/archive\/(\d{4})-(\d{2})-(\d{2})\.html$/);
+  if (snap) { document.getElementById("snapshot-date").textContent = +snap[2] + " 月 " + +snap[3] + " 日";
+    document.getElementById("snapshot-note").hidden = false; }
 
   var greet = document.getElementById("greet");
   if (greet) { var h = new Date().getHours();
