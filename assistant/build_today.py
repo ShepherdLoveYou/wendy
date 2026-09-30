@@ -847,7 +847,9 @@ def main(argv: list[str] | None = None):
     online = apply_notes(online, notes)
 
     state = make_state(now, tasks, announcements, classes)
-    changes = diff(load_prev_state(args.prev), state)
+    prev_state = load_prev_state(args.prev)
+    changes = diff(prev_state, state)
+    print(f"  · 快照对比：{'没有上一份（第一次运行或解密失败）' if not prev_state else f'{len(changes) - 1 if changes else 0} 类变化' if changes else '和上一份一样'}")
     brief, brief_info = brief_agent.run_brief(agent_deps(now, cfg, tasks, classes, announcements, changes))
     print(f"  · 今日简报：{brief_info}")
     archive = []
