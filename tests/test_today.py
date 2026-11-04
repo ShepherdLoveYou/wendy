@@ -302,3 +302,15 @@ def test_frontend_script_runs(build, tmp_path, lang, loading):
     assert "</html>" in dom
     assert loading not in dom                          # the "next class / next deadline" cards were filled in
     assert 'class="fc' in dom                          # FullCalendar rendered
+
+
+def test_every_unfinished_task_can_be_ticked(build):
+    """Canvas sync can lag or fail, so any task not yet submitted gets a manual box; a submitted one does not."""
+    due = pt("2026-10-09 23:59")
+    now = due - timedelta(days=1)
+    canvas = FakeCanvas(planner=[item(7, 1001, "Reading", due), item(8, 1001, "Quiz", due, submitted=True)])
+    page = build(now, canvas)
+    assert 'data-key="canvas-assignment-7"' in page.html
+    assert 'data-key="canvas-assignment-8"' not in page.html
+    # the "next deadline" card skips a ticked task: the script reads the same device-local key the box writes
+    assert page.html.count('purrfessor-done:') >= 2

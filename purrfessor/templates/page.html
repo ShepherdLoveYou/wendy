@@ -135,7 +135,7 @@
       setNext("next-class", c.color, a > 0 ? fill(L.startsIn, { t: fmt(a) }) : fill(L.inClass, { t: fmt(new Date(c.end) - now) }),
         c.course + " " + c.kind, "", relDay(c.start) + " " + hhmm(c.start) + "–" + hhmm(c.end) + (c.where ? " · " + c.where : ""));
     } else setNext("next-class", "", "—", L.noMore, "", "");
-    var t = (D.tasks || []).filter(function (x) { return new Date(x.due) > now && !(x.manual && get("purrfessor-done:" + x.id)); })[0];
+    var t = (D.tasks || []).filter(function (x) { return new Date(x.due) > now && !get("purrfessor-done:" + x.id); })[0];
     if (t) setNext("next-due", t.color, fill(L.left, { t: fmt(new Date(t.due) - now) }), t.title, t.url,
       t.course + " · " + relDay(t.due) + " " + hhmm(t.due) + " " + L.due);
     else setNext("next-due", "", "—", L.nothingDue, "", "");
@@ -171,7 +171,7 @@
     renderNext(now);
   }
 
-  // Tasks outside Canvas: completion is stored on this device only
+  // Manual tick for any unfinished task (Canvas sync can lag or fail): stored on this device only
   document.querySelectorAll(".tick").forEach(function (box) {
     var li = box.closest(".task"), key = "purrfessor-done:" + box.dataset.key;
     box.checked = !!get(key); li.classList.toggle("checked", box.checked);
