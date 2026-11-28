@@ -27,6 +27,9 @@ from .schedule import apply_notes, classes_on, classify, label, recurring_tasks
 from .snapshot import carry_memory, diff, load_prev_state, make_state
 
 
+DEFAULT_SECTION_PATTERN = r"^([A-Z]+)_(\w+?)_(\d{3})_(\d{2})([WSUF])"   # for a [banner] url given without a pattern
+
+
 def make_canvas(S: Settings):
     """Factory kept separate so tests can swap in a fake Canvas."""
     return canvas.Canvas(S.canvas_url, os.environ.get("CANVAS_TOKEN", ""))
@@ -95,10 +98,11 @@ def main(argv: list[str] | None = None) -> None:
     t = T(S.language)
     now = datetime.fromisoformat(args.now).astimezone(S.tz) if args.now else datetime.now(S.tz)
     warnings = [t(w) for w in S.warnings]
-    pattern = re.compile(S.banner.get("section_pattern", r"^([A-Z]+)_(\w+?)_(\d{3})_(\d{2})([WSUF])"))
+    # only a school preset knows its course-code format: without one, nothing below assumes any
+    section_pattern = re.compile(S.banner["section_pattern"]) if S.banner.get("section_pattern") else None
 
     client = make_canvas(S)
-    courses, tasks, announcements, ai_model, grades = [], [], [], "", []
+    courses, tasks, announcements, ai_model, grades, undated = [], [], [], "", [], []
     if not os.environ.get("CANVAS_TOKEN"):
         warnings.append(t("warn_no_token"))
     else:
@@ -113,10 +117,16 @@ def main(argv: list[str] | None = None) -> None:
                 apply_ai(ai, tasks, announcements, S.tz)
                 ai_model = ai["model"]
             tasks += canvas.announcement_tasks(announcements, tasks, now, t)
-            if S.on("grades"):
+            if S.on("grades") or S.on("undated"):
                 try:
-                    grades = canvas.grades(client.get, courses, S.courses, pattern)
-                except Exception as e:  # noqa: BLE001 - grades are optional
+                    fetched = canvas.submissions(client.get, courses, section_pattern)   # one request per course, shared
+                    if S.on("grades"):
+                        grades = canvas.grades(fetched, S.courses)
+                    canvas.attach_submissions(tasks, fetched, S.tz, scores=S.on("grades"))
+                    if S.on("undated"):
+                        undated = canvas.undated(fetched, S.courses, now, S.tz, S.canvas_url, S.undated_min_points,
+                                                 {x.aid for x in tasks if x.aid})
+                except Exception as e:  # noqa: BLE001 - grades and unscheduled work are optional
                     print(f"  · grades unavailable: {type(e).__name__}")
         except urllib.error.HTTPError as e:
             warnings.append(t("warn_token") if e.code == 401 else t("warn_http", code=e.code))
@@ -126,7 +136,8 @@ def main(argv: list[str] | None = None) -> None:
 
     timed, online, from_banner = [], [], False
     if S.banner.get("url"):
-        sections = banner.enrolled_sections(courses, pattern, S.banner.get("term_suffix", {}))
+        sections = banner.enrolled_sections(courses, section_pattern or re.compile(DEFAULT_SECTION_PATTERN),
+                                            S.banner.get("term_suffix", {}))
         if sections:
             try:
                 timed, online = banner.classes(sections, S.banner["url"], banner.opener())
@@ -167,11 +178,13 @@ def main(argv: list[str] | None = None) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render(now, S, classes, online, tasks, announcements, warnings, ai_model, brief=brief,
                           changes=changes, state=state, archive=archive, archive_base=args.archive_base,
-                          grades=grades, home_url=args.home_url, from_banner=from_banner), encoding="utf-8")
+                          grades=grades, undated=undated, home_url=args.home_url, from_banner=from_banner),
+                   encoding="utf-8")
     count = lambda src: sum(x.source == src for x in tasks)  # noqa: E731
     print(f"✓ {out} · {S.school} · {S.language} · Canvas {count('Canvas')} · from announcements {count('announcement')}"
           f" · recurring {len(tasks) - count('Canvas') - count('announcement')} · announcements {len(announcements)}"
-          f" · class meetings {len(timed)} + online {len(online)}" + (f" · AI {ai_model}" if ai_model else "")
+          f" · class meetings {len(timed)} + online {len(online)} · no due date {len(undated)}"
+          + (f" · AI {ai_model}" if ai_model else "")
           + "".join(f"\n  ⚠ {w}" for w in warnings))
 
 

@@ -4,13 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{{TITLE}}</title>
+<meta name="theme-color" content="#fbfafb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#161716" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,{{FAVICON}}">
 <script>
-  // Follow the system's dark mode: Tabler reads data-bs-theme, FullCalendar reads data-color-scheme
+  // Follow the system's dark mode, also while the page stays open (a phone switches at sunset): Tabler reads
+  // data-bs-theme, FullCalendar reads data-color-scheme
   (function () {
-    var dark = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches;
-    document.documentElement.setAttribute("data-bs-theme", dark ? "dark" : "light");
-    document.documentElement.setAttribute("data-color-scheme", dark ? "dark" : "light");
+    var q = window.matchMedia && matchMedia("(prefers-color-scheme: dark)");
+    function apply() {
+      var theme = q && q.matches ? "dark" : "light";
+      document.documentElement.setAttribute("data-bs-theme", theme);
+      document.documentElement.setAttribute("data-color-scheme", theme);
+    }
+    apply();
+    if (q && q.addEventListener) q.addEventListener("change", apply);
   })();
 </script>
 <!-- Open-source kits: Tabler (MIT), Tabler Icons (MIT), FullCalendar (MIT) -->
@@ -24,40 +32,99 @@
 {{FC_LOCALE_SCRIPT}}
 <style>
   /* Only what Tabler doesn't cover */
+  /* Small coloured text. Tabler writes it in the plain palette colour on a pale wash of the same colour (2-4:1 for
+     green, teal, orange, yellow…; in dark mode purple, blue, pink, red). Mixing the colour toward black (white in dark
+     mode) keeps its hue and reaches 4.5:1. tests/test_contrast.py checks every colour against these two numbers. */
+  :root { --tone-ink: #000; --tone-mix: 60%; --tone-mix-hot: 75%; --tick-line: var(--tblr-secondary); --ring: var(--tblr-primary);
+    --primary-ink: color-mix(in srgb, var(--tblr-blue) var(--tone-mix), var(--tone-ink)); }
+  :root[data-bs-theme="dark"] { --tone-ink: #fff; --tone-mix: 60%; --ring: color-mix(in srgb, var(--tblr-primary) 55%, #fff); }
+  .badge.bg-red-lt, .text-danger { --tone: var(--tblr-red); }
+  .badge.bg-orange-lt { --tone: var(--tblr-orange); }
+  .badge.bg-yellow-lt { --tone: var(--tblr-yellow); }
+  .badge.bg-lime-lt { --tone: var(--tblr-lime); }
+  .badge.bg-green-lt, .text-success { --tone: var(--tblr-green); }
+  .badge.bg-teal-lt { --tone: var(--tblr-teal); }
+  .badge.bg-cyan-lt { --tone: var(--tblr-cyan); }
+  .badge.bg-azure-lt { --tone: var(--tblr-azure); }
+  .badge.bg-blue-lt, .text-primary { --tone: var(--tblr-blue); }
+  .badge.bg-indigo-lt { --tone: var(--tblr-indigo); }
+  .badge.bg-purple-lt { --tone: var(--tblr-purple); }
+  .badge.bg-pink-lt { --tone: var(--tblr-pink); }
+  .badge.bg-secondary-lt { --tone: var(--tblr-secondary); }
+  .badge[class*="-lt"], .text-danger, .text-success, .text-primary {
+    color: color-mix(in srgb, var(--tone) var(--tone-mix), var(--tone-ink)) !important; }
+  .badge { font-size: .75rem; }
+  .alert-warning { --tblr-alert-color: color-mix(in srgb, var(--tblr-warning) var(--tone-mix), var(--tone-ink)); }
+  .list-group-header { color: var(--tblr-secondary-color); }
+  .nav-sticky .nav-link { color: var(--tblr-secondary-color); }
+  .nav-sticky .nav-link.active { --tone: var(--tblr-blue); color: color-mix(in srgb, var(--tone) var(--tone-mix), var(--tone-ink)); }
   .min-w-0 { min-width: 0; }
   .time-col { min-width: 3.5rem; }
-  .nav-sticky { position: sticky; top: 0; z-index: 1020; margin: 1rem -.75rem 0; padding: .5rem .75rem;
+  /* The page's side padding (at least the notch / rounded-corner inset, for a phone held sideways or a home-screen app).
+     The sticky nav cancels exactly this padding, so it is as wide as the screen and never makes the page scroll sideways. */
+  .container-xl { --pad-l: max(var(--tblr-page-padding, .75rem), env(safe-area-inset-left, 0px));
+    --pad-r: max(var(--tblr-page-padding, .75rem), env(safe-area-inset-right, 0px));
+    padding-left: var(--pad-l); padding-right: var(--pad-r); }
+  .page-body { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .nav-sticky { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 1020;
+    margin: 1rem calc(-1 * var(--pad-r)) 0 calc(-1 * var(--pad-l)); padding: .5rem var(--pad-r) .5rem var(--pad-l);
     background: color-mix(in srgb, var(--tblr-body-bg) 85%, transparent);
     -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); overflow-x: auto; }
+  .nav-sticky { scrollbar-width: none; }          /* the fade below says there is more; no scrollbar under the pills */
+  .nav-sticky::-webkit-scrollbar { display: none; }
   .nav-sticky .nav { flex-wrap: nowrap; }
+  /* more links off to the right (English labels, a "Home" link on a small phone): the right edge fades out */
+  .nav-sticky.more { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 2rem), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 2rem), transparent); }
   .nav-sticky .nav-link { white-space: nowrap; }
   section[id] { scroll-margin-top: 4.5rem; }
   .next .card-status-start { background: var(--c, var(--tblr-border-color)); }
-  .next .next-big { color: var(--c, inherit); font-variant-numeric: tabular-nums; }
+  .next .next-big { font-variant-numeric: tabular-nums; }
+  /* The number follows urgency, not the course: a green "8 hours left" reads as "fine" when it is due tonight. The
+     course colour stays on the status bar; the next class (no urgency) keeps its course hue, mixed to 4.5:1. */
+  #next-class .next-big { color: color-mix(in srgb, var(--c, var(--tblr-body-color)) var(--tone-mix), var(--tone-ink)); }
+  .next-big.tone-red { --tone: var(--tblr-red); }
+  .next-big.tone-orange { --tone: var(--tblr-orange); }
+  .next-big.tone-red, .next-big.tone-orange { color: color-mix(in srgb, var(--tone) var(--tone-mix-hot), var(--tone-ink)); }
   .cd { font-variant-numeric: tabular-nums; min-width: 5.5rem; }
-  .task.done .title, .task.checked .title { text-decoration: line-through; opacity: .5; }
-  .task.checked .cd { opacity: .35; }
-  .cls.past { opacity: .45; }
+  /* Finished items are faded with a colour, not opacity: their text stays above 4.5:1 (done titles) / 3:1 (the rest) */
+  .task.done .title, .task.checked .title { text-decoration: line-through; color: var(--tblr-secondary-color); }
+  .task.checked .cd { opacity: .7; }
+  .task.checked .lock-note { display: none; }
+  .cls.past { opacity: .78; }
   /* Big enough for a thumb: the label around the box is the tap target (the padding is cancelled by the margin) */
   .tick-hit { display: flex; margin: -.5rem; padding: .5rem; cursor: pointer; }
-  .tick { width: 1.5rem; height: 1.5rem; }
+  .tick { width: 1.5rem; height: 1.5rem; border: 2px solid var(--tick-line); }   /* the box is the only control: 3:1 against the card */
+  .tick:checked { border-color: var(--tick-line); }
+  .tick:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
   .preview { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
-    cursor: pointer; white-space: pre-line; }
+    white-space: pre-line; }
+  .preview.cut { cursor: pointer; }
+  .preview-2 { -webkit-line-clamp: 2; }
   .preview.open { display: block; }
+  /* The pulsing "unread" dots stand still for people who ask for less motion */
+  @media (prefers-reduced-motion: reduce) { .status-dot-animated::before { animation: none !important; } }
+  .preview:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 2px; }
   #calendar .deadline { font-weight: 600; }
+  /* FullCalendar's forma palette is a blue-black (#030712) in dark mode, darker than the page and the cards around it:
+     give the calendar the card's own colours (and a readable grey for its hour labels) in both themes */
+  #calendar { --fc-forma-background: var(--tblr-bg-surface); --fc-forma-border: var(--tblr-border-color);
+    --fc-forma-foreground: var(--tblr-body-color); --fc-forma-muted-foreground: var(--tblr-secondary-color); }
   .term-progress { width: 9rem; }
+  .term-week { margin-bottom: .25rem; }
   .brand-logo { display: block; }
+  .grade-row { padding-block: .625rem; }
   /* Today's brief */
   .brief-headline { margin: 0; padding-left: .875rem; border-left: 3px solid var(--tblr-primary);
     font-size: 1.0625rem; font-weight: 600; line-height: 1.7; }
   .brief-num { display: inline-grid; place-items: center; width: 1.75rem; height: 1.75rem; border-radius: 50%;
-    font-size: .8125rem; font-weight: 700; background: var(--tblr-primary-lt); color: var(--tblr-primary); }
+    font-size: .8125rem; font-weight: 700; background: var(--tblr-primary-lt); color: var(--primary-ink); }
   .brief-step { display: flex; gap: .5rem; align-items: baseline; line-height: 1.6; }
-  .brief-step .ti { color: var(--tblr-primary); flex: none; }
+  .brief-step .ti { color: var(--primary-ink); flex: none; }
   #brief .list-group-item { padding-top: 1rem; padding-bottom: 1rem; }
   .brief-section { display: flex; align-items: center; gap: .5rem; padding: 1.25rem 1.25rem .5rem;
     font-weight: 600; color: var(--tblr-body-color); border-top: 1px solid var(--tblr-border-color); }
-  .brief-section .ti { color: var(--tblr-primary); font-size: 1.125rem; }
+  .brief-section .ti { color: var(--primary-ink); font-size: 1.125rem; }
   /* The wizard-cat meme: caption sits in the blank lower-right area of the image */
   .meme { position: relative; max-width: 560px; aspect-ratio: 1170 / 792; container-type: inline-size;
     background: #fff var(--cat) center / 100% 100% no-repeat; border: 1px solid var(--tblr-border-color);
@@ -66,9 +133,20 @@
     align-content: center; justify-items: center; color: #111; font-weight: 500; font-size: 4.7cqw; line-height: 1.28;
     white-space: nowrap; font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif; }
   .meme-num { font-variant-numeric: tabular-nums; }
+  /* The picture is on a white page: in dark mode dim it so it is not a glaring slab (same position, size and aspect) */
+  :root[data-bs-theme="dark"] .meme { filter: brightness(.7) contrast(1.05); }
   .meme-en .meme-cap { font-size: 4.1cqw; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
   .meme-foot { max-width: 560px; }
-  @media (max-width: 575.98px) { .cd { min-width: 4.5rem; } .page-title { font-size: 1.5rem; } .tick { width: 1.75rem; height: 1.75rem; } }
+  @media (max-width: 575.98px) {
+    .cd { min-width: 4.5rem; } .page-title { font-size: 1.5rem; } .tick { width: 1.75rem; height: 1.75rem; }
+    /* The title keeps its line: the week and its bar go on one line of their own under it … */
+    .page-header .term-col { width: 100%; display: flex; align-items: center; gap: .75rem; }
+    .term-week { margin: 0; white-space: nowrap; }
+    .term-progress { flex: 1; width: auto; }
+    /* … and a card's grey note goes under its title instead of squeezing the title into two lines */
+    .card-header { flex-wrap: wrap; row-gap: .125rem; padding-block: .75rem; }
+    .card-note { flex: 1 0 100%; margin: 0; padding: 0; }
+  }
 </style>
 </head>
 <body>
@@ -93,6 +171,9 @@
   var ls = null; try { ls = window.localStorage; } catch (e) {}
   function get(k) { try { return ls && ls.getItem(k); } catch (e) { return null; } }
   function put(k, v) { try { v ? ls.setItem(k, "1") : ls.removeItem(k); } catch (e) {} }
+  // What is ticked, as this visit knows it. The device store can be missing or refuse writes (blocked site data, some
+  // in-app browsers): the tick still strikes the task through and drops it from "next deadline", for this visit.
+  var DONE = "purrfessor-done:", ticked = {};
   function fill(s, o) { return String(s || "").replace(/\{(\w+)\}/g, function (_, k) { return o[k] != null ? o[k] : ""; }); }
   function pad(n) { return (n < 10 ? "0" : "") + n; }
   // Every clock time is shown in the school's time zone, wherever the page is opened.
@@ -106,11 +187,19 @@
     var out = d ? d + L.d + h + L.h : h ? h + L.h + m + L.m : m + L.m + pad(x) + L.s;
     return out.trim();
   }
+  // How long past due, in one unit: "53 days", "5 hours", "12 min" (a day count is what tells last night from last month)
+  function ago(ms) {
+    var s = Math.floor(Math.abs(ms) / 1000), d = Math.floor(s / 86400), h = Math.floor(s / 3600), m = Math.max(Math.floor(s / 60), 1);
+    var n = d || h || m, u = d ? L.unitD : h ? L.unitH : L.unitM;
+    return n + " " + u[n === 1 ? 0 : 1];
+  }
   function relDay(t) {
     var n = Math.round((Date.parse(YMD.format(new Date(t))) - Date.parse(YMD.format(new Date()))) / 864e5);
     return (L.rel && n >= 0 && n < L.rel.length) ? L.rel[n] : WDAY.format(new Date(t));
   }
-  function badgeFor(ms) { return ms < 864e5 ? "bg-red-lt" : ms < 2592e5 ? "bg-orange-lt" : ms < 6048e5 ? "bg-blue-lt" : "bg-secondary-lt"; }
+  // How urgent is it (red under a day, orange under three, blue under a week): the badges and the "next deadline" number share this
+  function urgency(ms) { return ms < 864e5 ? "red" : ms < 2592e5 ? "orange" : ms < 6048e5 ? "blue" : "secondary"; }
+  function badgeFor(ms) { return "bg-" + urgency(ms) + "-lt"; }
   function setBadge(el, cls) { BADGES.forEach(function (b) { el.classList.remove(b); }); el.classList.add(cls); }
 
   var snap = location.pathname.match(/\/archive\/(\d{4})-(\d{2})-(\d{2})\.html$/);
@@ -122,10 +211,11 @@
   if (greet && L.greet) { var h = new Date().getHours();
     greet.textContent = L.greet[h < 5 ? 0 : h < 11 ? 1 : h < 13 ? 2 : h < 18 ? 3 : 4]; }
 
-  function setNext(id, color, big, title, url, meta) {
+  function setNext(id, color, big, title, url, meta, tone) {
     var el = document.getElementById(id); if (!el) return;
     el.style.setProperty("--c", color || "");
-    el.querySelector(".next-big").textContent = big;
+    var n = el.querySelector(".next-big"); n.textContent = big;
+    n.classList.toggle("tone-red", tone === "red"); n.classList.toggle("tone-orange", tone === "orange");
     var t = el.querySelector(".next-title"); t.textContent = "";
     if (url) { var a = document.createElement("a"); a.href = url; a.target = "_blank"; a.rel = "noopener";
       a.className = "text-reset"; a.textContent = title; t.appendChild(a); } else t.textContent = title;
@@ -138,9 +228,9 @@
       setNext("next-class", c.color, a > 0 ? fill(L.startsIn, { t: fmt(a) }) : fill(L.inClass, { t: fmt(new Date(c.end) - now) }),
         c.course + " " + c.kind, "", relDay(c.start) + " " + hhmm(c.start) + "–" + hhmm(c.end) + (c.where ? " · " + c.where : ""));
     } else setNext("next-class", "", "—", L.noMore, "", "");
-    var t = (D.tasks || []).filter(function (x) { return new Date(x.due) > now && !get("purrfessor-done:" + x.id); })[0];
+    var t = (D.tasks || []).filter(function (x) { return new Date(x.due) > now && !ticked[DONE + x.id]; })[0];
     if (t) setNext("next-due", t.color, fill(L.left, { t: fmt(new Date(t.due) - now) }), t.title, t.url,
-      t.course + " · " + relDay(t.due) + " " + hhmm(t.due) + " " + L.due);
+      t.course + " · " + relDay(t.due) + " " + hhmm(t.due) + " " + L.due, urgency(new Date(t.due) - now));
     else setNext("next-due", "", "—", L.nothingDue, "", "");
   }
   function renderMeme(now) {
@@ -155,30 +245,65 @@
     document.querySelector(".meme-elapsed").textContent = fill(L.elapsed, { w: weeks, d: days, year: y });
     document.querySelector(".meme-pct").textContent = pct.toFixed(1) + "%";
     document.querySelector(".meme-bar").style.width = pct.toFixed(2) + "%";
+    var bar = document.querySelector(".meme-bar").parentNode; bar.setAttribute("aria-valuenow", pct.toFixed(1));
   }
-  // The three task counters ignore what is ticked off. A snapshot page keeps the numbers it was built with.
+  // The three task counters leave out what is ticked off, and follow the clock while the page is open: a Canvas task
+  // whose time passes moves from "due today / in 3 days" to "overdue"; off-Canvas work (data-manual) past its time is
+  // counted nowhere (the server never calls it overdue either). A snapshot page keeps the numbers it was built with.
   function renderStats(now) {
     if (snap) return;
     var n = { overdue: 0, due_today: 0, due_3d: 0 }, today = YMD.format(new Date(now));
     document.querySelectorAll(".task[data-state]").forEach(function (li) {
-      var st = li.dataset.state, due = new Date(li.dataset.due);
+      var st = li.dataset.state, due = new Date(li.dataset.due), ms = due - now;
       if (st === "done" || li.classList.contains("checked")) return;
-      if (st === "overdue") { n.overdue++; return; }
+      if (st === "overdue" || (ms < 0 && !li.dataset.manual)) { n.overdue++; return; }
+      if (ms < 0) return;
       if (YMD.format(due) === today) n.due_today++;
-      if (due - now <= 2592e5) n.due_3d++;
+      if (ms <= 2592e5) n.due_3d++;
     });
-    Object.keys(n).forEach(function (k) {
-      var el = document.querySelector('[data-stat="' + k + '"]'); if (el) el.textContent = n[k]; });
+    Object.keys(n).forEach(function (k) {   // only when it changed: these are live regions, a rewrite would be read out again
+      var el = document.querySelector('[data-stat="' + k + '"]'); if (el && el.textContent !== String(n[k])) el.textContent = n[k]; });
     var av = document.querySelector('[data-stat="overdue"]'); av = av && av.closest(".row").querySelector(".avatar");
     if (av) { av.classList.toggle("bg-red", n.overdue > 0); av.classList.toggle("bg-green", n.overdue === 0); }
+  }
+  // A Canvas task whose time passes while the page is open leaves its day for the "overdue" group, with its date: where a
+  // rebuild would put it, so the list agrees with the counters. The headings count again, an empty one hides. A row that
+  // has the focus waits for the next second, so a tap or a key press is not lost to the move. A snapshot page stays as built.
+  function regroup(now) {
+    if (snap) return;
+    var list = document.querySelector("#todo .list-group"), over = list && list.querySelector('[data-group="overdue"]'), moved = false;
+    if (!over) return;
+    list.querySelectorAll('.task[data-state="soon"]:not([data-manual])').forEach(function (li) {
+      var due = new Date(li.dataset.due);
+      if (due >= now || li.contains(document.activeElement)) return;
+      var w = li.querySelector(".when"); if (w) w.textContent = w.dataset.full;
+      li.dataset.state = "overdue";
+      var at = over.nextElementSibling;       // behind the rows that are already there, in due order
+      while (at && at.classList.contains("task") && new Date(at.dataset.due) <= due) at = at.nextElementSibling;
+      list.insertBefore(li, at); moved = true;
+    });
+    if (!moved) return;
+    list.querySelectorAll(".list-group-header[data-group]").forEach(function (h) {
+      var n = 0, e = h.nextElementSibling;
+      while (e && !e.classList.contains("list-group-header")) { if (e.classList.contains("task")) n++; e = e.nextElementSibling; }
+      var text = h.dataset.fmt.replace("{n}", n);
+      if (h.textContent !== text) h.textContent = text;
+      h.hidden = n === 0;
+    });
   }
   function tick() {
     var now = Date.now();
     renderMeme(now);
+    regroup(now);
     renderStats(now);
     document.querySelectorAll(".task[data-due]:not(.done)").forEach(function (li) {
-      var ms = new Date(li.dataset.due) - now, b = li.querySelector(".cd");
-      if (b) { b.textContent = ms < 0 ? L.pastDue : fmt(ms); setBadge(b, badgeFor(ms)); }
+      var ms = new Date(li.dataset.due) - now, b = li.querySelector(".cd"), note = li.querySelector(".lock-note"),
+          open = li.dataset.lock ? new Date(li.dataset.lock) - now : -1;   // time left to hand it in late
+      if (b) {
+        if (ms < 0 && open > 0) { b.textContent = fill(L.lateOpen, { t: fmt(open) }); setBadge(b, "bg-orange-lt"); }
+        else { b.textContent = ms < 0 ? fill(L.overdueBy, { t: ago(ms) }) : fmt(ms); setBadge(b, badgeFor(ms)); }
+      }
+      if (note) note.hidden = open <= 0;
     });
     document.querySelectorAll(".cls[data-start]").forEach(function (li) {
       var a = new Date(li.dataset.start) - now, e = new Date(li.dataset.end) - now, b = li.querySelector(".cd"),
@@ -192,17 +317,46 @@
   }
 
   // Manual tick for any unfinished task (Canvas sync can lag or fail): stored on this device only
+  var show = {};
   document.querySelectorAll(".tick").forEach(function (box) {
-    var li = box.closest(".task"), key = "purrfessor-done:" + box.dataset.key;
-    box.checked = !!get(key); li.classList.toggle("checked", box.checked);
+    var li = box.closest(".task"), key = DONE + box.dataset.key;
+    show[key] = function (on) { ticked[key] = box.checked = on; li.classList.toggle("checked", on); };
+    show[key](!!get(key));
     box.addEventListener("change", function () {
-      li.classList.toggle("checked", box.checked); put(key, box.checked); renderNext(Date.now()); renderStats(Date.now());
+      show[key](box.checked); put(key, box.checked); renderNext(Date.now()); renderStats(Date.now());
     });
   });
-  document.querySelectorAll(".preview").forEach(function (p) {
-    p.addEventListener("click", function () { p.classList.toggle("open"); });
+  window.addEventListener("storage", function (e) {       // the same page ticked in another tab
+    if (show[e.key]) { show[e.key](!!e.newValue); renderNext(Date.now()); renderStats(Date.now()); }
   });
+  // Clamped text opens on a tap, and on Enter / Space for keyboard and screen-reader users. Only text that is really cut
+  // off is a control (a tab stop, a button with a name, a pointer); what is cut depends on the width, so it is decided at
+  // load, on resize, when the fonts arrive and when a closed <details> opens. An open one stays a button, to close it again.
+  var previews = document.querySelectorAll(".preview");
+  function armPreviews() {
+    previews.forEach(function (p) {
+      var cut = p.classList.contains("open") || p.scrollHeight > p.clientHeight + 1;
+      if (cut === p.classList.contains("cut")) return;
+      p.classList.toggle("cut", cut);
+      if (cut) { p.setAttribute("tabindex", "0"); p.setAttribute("role", "button"); p.setAttribute("aria-expanded", p.classList.contains("open")); }
+      else { p.removeAttribute("tabindex"); p.removeAttribute("role"); p.removeAttribute("aria-expanded"); }
+    });
+  }
+  previews.forEach(function (p) {
+    function toggle() { if (p.classList.contains("cut")) p.setAttribute("aria-expanded", p.classList.toggle("open")); }
+    p.addEventListener("click", toggle);
+    p.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+  });
+  armPreviews();
+  window.addEventListener("resize", armPreviews);
+  window.addEventListener("load", armPreviews);
+  document.addEventListener("toggle", armPreviews, true);      // <details> opening does not bubble: listen on the way down
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(armPreviews);
 
+  var navbar = document.querySelector(".nav-sticky");
+  function navFade() { if (navbar) navbar.classList.toggle("more", navbar.scrollWidth - navbar.clientWidth - navbar.scrollLeft > 4); }
+  if (navbar) { navbar.addEventListener("scroll", navFade, { passive: true }); window.addEventListener("resize", navFade);
+    window.addEventListener("load", navFade); navFade(); }
   var links = document.querySelectorAll(".nav-sticky .nav-link");
   if ("IntersectionObserver" in window) {
     var io = new IntersectionObserver(function (es) {

@@ -42,18 +42,48 @@ COURSES = [
         {"name": "DEMO_002A_010_26F - DEMO"}, {"name": "DEMO_002A_021_26F - DEMO"}]},
     {"id": 1003, "course_code": "Orientation 2026", "sections": []},   # not a real course: ignored
 ]
-CODE = {c["id"]: c["course_code"] for c in COURSES}
+# a school whose course codes look nothing like UCR's, and whose config has no [banner] section_pattern
+GENERIC_COURSES = [
+    {"id": 2001, "course_code": "BIO101-FA26", "enrollments": [{"type": "student", "computed_current_score": 88.0}],
+     "sections": [{"name": "BIO101-FA26 Lecture"}]},
+    {"id": 2002, "course_code": "Staff room", "enrollments": [{"type": "teacher"}], "sections": []},   # not a student there
+]
+CODE = {c["id"]: c["course_code"] for c in COURSES + GENERIC_COURSES}
 
 
 def item(pid, cid, title, due: datetime, kind="assignment", submitted=False, missing=False, excused=False,
-         marked=False, submittable=True, points=10, graded=False):
+         marked=False, submittable=True, points=10, graded=False, posted=True, feedback=False,
+         lock: datetime | None = None, aid=None):
+    """A planner item. graded+posted = the grade is visible; feedback = the grader left a comment (its text is
+    in the response, as in Canvas); lock = the plannable's lock_at; aid = the assignment behind a quiz."""
+    plannable = {"title": title, "points_possible": points}
+    if lock:
+        plannable["lock_at"] = z(lock)
+    if aid:
+        plannable["assignment_id"] = aid
+    subs = {"submitted": submitted, "missing": missing, "excused": excused, "graded": graded,
+            "posted_at": z(due) if graded and posted else None, "has_feedback": feedback, "needs_grading": False}
+    if feedback:
+        subs["feedback"] = {"comment": "PRIVATE-COMMENT-TEXT", "author_name": "A TA"}
     return {"plannable_id": pid, "plannable_type": kind, "course_id": cid,
             "context_name": f"{CODE[cid]} - COURSE", "plannable_date": z(due),
-            "plannable": {"title": title, "points_possible": points},
-            "submissions": ({"submitted": submitted, "missing": missing, "excused": excused, "graded": graded}
-                            if submittable else False),
+            "plannable": plannable, "submissions": subs if submittable else False,
             "planner_override": {"marked_complete": True} if marked else None,
             "html_url": f"/courses/{cid}/assignments/{pid}"}
+
+
+def submission_row(aid, name, points, due: datetime | None = None, cid=1001, lock: datetime | None = None,
+                   state="unsubmitted", score=None, excused=None, submitted: datetime | None = None,
+                   graded_at: datetime | None = None, description="", **assignment):
+    """One students/submissions record with its assignment, as Canvas returns it (due=None: no due date)."""
+    return {"assignment_id": aid, "score": score, "workflow_state": state, "excused": excused, "missing": False,
+            "late": False, "submitted_at": z(submitted) if submitted else None,
+            "graded_at": z(graded_at) if graded_at else None, "cached_due_date": z(due) if due else None,
+            "assignment": {"id": aid, "name": name, "points_possible": points, "published": True,
+                           "workflow_state": "published", "due_at": z(due) if due else None,
+                           "lock_at": z(lock) if lock else None, "description": description,
+                           "html_url": f"https://canvas.test/courses/{cid}/assignments/{aid}",
+                           "omit_from_final_grade": False, **assignment}}
 
 
 def announcement(aid, cid, title, message, posted: datetime, unread=True):
@@ -68,6 +98,7 @@ class FakeCanvas:
     announcements: list = field(default_factory=list)
     fail: int | None = None          # e.g. 401: token expired
     submissions: dict = field(default_factory=dict)   # course id → submissions (grades)
+    courses: list | None = None      # the courses Canvas returns (None: COURSES)
     grades_fail: bool = False
     calls: list = field(default_factory=list)
 
@@ -77,7 +108,7 @@ class FakeCanvas:
         if self.fail:
             raise urllib.error.HTTPError(f"https://canvas.test/{path}", self.fail, "fail", {}, None)
         if path == "courses":
-            return COURSES
+            return COURSES if self.courses is None else self.courses
         if path == "planner/items":
             lo, hi = date.fromisoformat(params["start_date"]), date.fromisoformat(params["end_date"])
             return [i for i in self.planner
@@ -177,6 +208,20 @@ due = "23:59"
 from = "2026-10-02"
 until = "2026-12-04"
 url = "https://hw.test"
+"""
+
+
+GENERIC_CONFIG = """
+language = "{lang}"
+name = "Tester"
+
+[school]
+name = "Generic U"
+canvas_url = "https://canvas.test"
+timezone = "America/Los_Angeles"
+
+[courses]
+"2001" = "BIO 101"
 """
 
 

@@ -22,18 +22,26 @@ STRINGS: dict[str, dict[str, str]] = {
         "todo_title": "Due in the next two weeks", "todo_aside": "Tick off anything you have finished (saved on this device)",
         "overdue_group": "Overdue · {n}", "nothing_due": "Nothing due in two weeks 🎉",
         "later_n": "{n} more later", "done_n": "Recently submitted · {n}", "submitted": "Submitted",
-        "mark_done": "Mark as done", "pts": "{p} pts", "from_announcement": "From announcement: {title}",
-        "ann_note_ai": "“{quote}” — read from the announcement by AI; open it to double-check",
-        "ann_note_rule": "“{quote}” — date read from the announcement; open it to double-check",
+        "undated_n": "No due date yet · {n}", "no_due": "No due date", "undated_more": "+{n} more not shown",
+        "undated_help": "Published work worth {pts}+ points that Canvas lists without a due date. A date in the description "
+                        "is read automatically and may not be a deadline: open the item to check.",
+        "undated_hint": "The description mentions {when}: “{quote}” — please check",
+        "mark_done": "Mark as done", "has_feedback": "Feedback",
+        "late_until": "Can still be submitted until {when} (late work may lose points)", "late_open": "Still open · {t}",
+        "pts": "{p} pts", "from_announcement": "From announcement: {title}",
+        "ann_note": "“{quote}”", "ann_check_ai": "Read by AI, please check", "ann_check_rule": "Auto-read, please check",
         "timetable": "Timetable", "timetable_aside": "From the class schedule · top row = deadlines that day",
         "timetable_manual": "From your config · top row = deadlines that day",
         "online_note": "Online, no fixed meeting time: {names}", "fc_due": "Due",
         "grades": "Grades & completion", "grades_aside": "Rate = points on graded work, not weighted",
-        "grade_total": "Current grade", "grade_hidden": "Hidden by instructor", "grade_rate": "Graded work",
-        "grade_rate_val": "{rate}% ({earned}/{possible}, {n} graded)", "grade_none": "Nothing graded yet",
+        "grade_total": "Total", "grade_hidden": "Hidden", "grade_rate": "Rate",
+        "grade_rate_val": "Graded work: {rate}% ({earned}/{possible} points, {n} graded)",
+        "grade_rate_detail": "{earned}/{possible} · {n} graded", "grade_none": "Not yet",
         "missing_n": "Missing {n}", "late_n": "Late {n}", "no_missing": "Nothing missing",
         "changes": "Since last update", "changes_since": "Last update: {when}",
-        "ch_new": "New", "ch_done": "Submitted", "ch_due": "Due date moved", "ch_removed": "Withdrawn",
+        "ch_new": "New", "ch_done": "Submitted", "ch_graded": "Graded", "ch_graded_was": "(was {old})",
+        "ch_graded_more": "+{n} more",
+        "ch_due": "Due date moved", "ch_removed": "Withdrawn",
         "ch_news": "New announcement", "ch_class_add": "Class added", "ch_class_del": "Class removed",
         "due_on": "due {when}",
         "brief": "Today's brief", "brief_badge": "Self-improving AI agent · just a suggestion",
@@ -55,7 +63,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "warn_http": "Couldn't read Canvas: HTTP {code}", "warn_net": "Couldn't read Canvas: connection error ({err})",
         "warn_banner": "Couldn't read the class schedule ({err}); showing only classes from your config",
         "snapshot_note": "This is the snapshot from {date}; it no longer updates.", "snapshot_latest": "See the latest →",
-        "tick_title": "Mark as done",
+        "tick_title": "Mark as done: {title} ({course}), due {when}", "term_progress": "Term progress: week {n} of {total}",
         "lock_title": "{name}'s Today · Purrfessor", "lock_instructions": "Enter the password to see today's plan",
         "lock_button": "Open", "lock_placeholder": "Password", "lock_remember": "Remember me for 30 days",
         "lock_error": "Wrong password",
@@ -73,18 +81,25 @@ STRINGS: dict[str, dict[str, str]] = {
         "todo_title": "接下来两周要交的", "todo_aside": "做完的任务可以自己打勾（只保存在这台设备）",
         "overdue_group": "逾期未交 · {n}", "nothing_due": "两周内没有要交的 🎉",
         "later_n": "更远的 {n} 项", "done_n": "最近已交 {n} 项", "submitted": "已交",
-        "mark_done": "我做完了", "pts": "{p} 分", "from_announcement": "公告提到：{title}",
-        "ann_note_ai": "“{quote}” —— AI 从公告里读出来的，请点开核对",
-        "ann_note_rule": "“{quote}” —— 日期是从公告里自动读的，请点开核对",
+        "undated_n": "还没设截止日期 · {n} 项", "no_due": "没有截止日期", "undated_more": "还有 {n} 项没列出",
+        "undated_help": "Canvas 里没有写截止日期、分值 {pts} 分以上的作业。作业说明里的日期是自动读出来的，不一定是截止时间，请点开作业核对。",
+        "undated_hint": "作业说明里提到 {when}：“{quote}” —— 请点开核对",
+        "mark_done": "我做完了", "has_feedback": "有评语",
+        "late_until": "过了截止时间还能交，到 {when} 关闭（晚交可能扣分）", "late_open": "还能交 · {t}",
+        "pts": "{p} 分", "from_announcement": "公告提到：{title}",
+        "ann_note": "“{quote}”", "ann_check_ai": "AI 读的，请核对", "ann_check_rule": "自动读的，请核对",
         "timetable": "课程表", "timetable_aside": "自动读取选课系统 · 最上面一行是当天的截止",
         "timetable_manual": "来自你的配置 · 最上面一行是当天的截止",
         "online_note": "线上课，没有固定上课时间：{names}", "fc_due": "截止",
         "grades": "成绩与完成情况", "grades_aside": "得分率按已批改作业直接相加，未按各科权重计算",
-        "grade_total": "总成绩", "grade_hidden": "老师未公开", "grade_rate": "已批改作业得分率",
-        "grade_rate_val": "{rate}%（{earned}/{possible}，{n} 项）", "grade_none": "还没有批改的作业",
+        "grade_total": "总成绩", "grade_hidden": "老师未公开", "grade_rate": "得分率",
+        "grade_rate_val": "已批改作业得分率 {rate}%（{earned}/{possible} 分，{n} 项）",
+        "grade_rate_detail": "{earned}/{possible} · {n} 项", "grade_none": "暂无批改",
         "missing_n": "缺交 {n}", "late_n": "晚交 {n}", "no_missing": "没有缺交",
         "changes": "和上次比", "changes_since": "上次更新：{when}",
-        "ch_new": "新作业", "ch_done": "已交", "ch_due": "截止改了", "ch_removed": "被撤下",
+        "ch_new": "新作业", "ch_done": "已交", "ch_graded": "出分了", "ch_graded_was": "（原来 {old}）",
+        "ch_graded_more": "还有 {n} 项",
+        "ch_due": "截止改了", "ch_removed": "被撤下",
         "ch_news": "新公告", "ch_class_add": "课表新增", "ch_class_del": "课表去掉",
         "due_on": "{when} 截止",
         "brief": "今日简报", "brief_badge": "AI Agent 自改进智能体生成 · 仅供参考",
@@ -106,7 +121,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "warn_http": "没读到 Canvas：返回 HTTP {code}", "warn_net": "没读到 Canvas：连接出错（{err}）",
         "warn_banner": "没读到选课系统的课表（{err}），课表只显示配置里手填的部分",
         "snapshot_note": "这是 {date} 的历史快照，内容不会再更新。", "snapshot_latest": "查看最新的 →",
-        "tick_title": "标记为已完成",
+        "tick_title": "标记为已完成：{title}（{course}），{when} 截止", "term_progress": "学期进度：第 {n} 周，共 {total} 周",
         "lock_title": "{name} 的今日 · 喵教授", "lock_instructions": "输入口令查看今天要做的事",
         "lock_button": "打开", "lock_placeholder": "口令", "lock_remember": "30 天内记住我", "lock_error": "口令不对",
     },
@@ -140,13 +155,15 @@ RELATIVE = {"en": {-1: "Yesterday", 0: "Today", 1: "Tomorrow"},
 JS = {
     "en": {"d": "d ", "h": "h ", "m": "m ", "s": "s", "startsIn": "starts in {t}", "inClass": "In class · {t} left",
            "noMore": "No more classes this week", "left": "{t} left", "nothingDue": "Nothing due soon 🎉",
-           "due": "due", "pastDue": "Past due", "in": "in {t}", "live": "In class", "ended": "Ended",
+           "due": "due", "overdueBy": "overdue {t}", "unitD": ["day", "days"], "unitH": ["hour", "hours"],
+           "unitM": ["min", "min"], "in": "in {t}", "live": "In class", "ended": "Ended",
            "rel": ["Today", "Tomorrow"], "greet": ["Up late — get some rest", "Good morning", "Good afternoon",
                                                     "Good afternoon", "Good evening"],
            "elapsed": "{w} weeks {d} days into {year}"},
     "zh": {"d": "天", "h": "小时", "m": "分", "s": "秒", "startsIn": "{t} 后开始", "inClass": "上课中 · 还剩 {t}",
            "noMore": "这周没有更多课了", "left": "还剩 {t}", "nothingDue": "近期没有要交的 🎉",
-           "due": "截止", "pastDue": "已截止", "in": "{t}后", "live": "上课中", "ended": "已结束",
+           "due": "截止", "overdueBy": "已逾期 {t}", "unitD": ["天", "天"], "unitH": ["小时", "小时"],
+           "unitM": ["分钟", "分钟"], "in": "{t}后", "live": "上课中", "ended": "已结束",
            "rel": ["今天", "明天", "后天"], "greet": ["夜深了，早点休息", "早上好", "中午好", "下午好", "晚上好"],
            "elapsed": "今年已过 {w} 周 {d} 天"},
 }
@@ -192,10 +209,16 @@ class T:
         head = self.rel_day(dt.date(), today) if today else self.md(dt)
         return f"{head} {dt:%H:%M}"
 
+    def overdue_by(self, delta: timedelta) -> str:
+        """'overdue 53 days' · '已逾期 53 天': how long ago, in one unit. The page script writes the same text live."""
+        s, j = int(abs(delta.total_seconds())), JS[self.lang]
+        n, unit = (s // 86400, "unitD") if s >= 86400 else (s // 3600, "unitH") if s >= 3600 else (max(s // 60, 1), "unitM")
+        return j["overdueBy"].format(t=f"{n} {j[unit][0 if n == 1 else 1]}")
+
     def countdown(self, delta: timedelta) -> str:
         s = int(delta.total_seconds())
         if s < 0:
-            return self("pastDue") if "pastDue" in self.s else JS[self.lang]["pastDue"]
+            return self.overdue_by(delta)
         j = JS[self.lang]
         d, h, m = s // 86400, s % 86400 // 3600, s % 3600 // 60
         text = f"{d}{j['d']}{h}{j['h']}" if d else f"{h}{j['h']}{m}{j['m']}" if h else f"{m}{j['m']}"
